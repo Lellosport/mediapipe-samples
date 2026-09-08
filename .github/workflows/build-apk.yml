@@ -21,16 +21,16 @@ jobs:
         cache: gradle
 
     - name: Dai i permessi a Gradle
-      run: chmod +x examples/llm_inference/android/gradlew
+      run: chmod +x examples/text_generation/android/gradlew
 
     - name: Compila l'APK
       run: |
-        cd examples/llm_inference/android
+        cd examples/text_generation/android
         ./gradlew assembleDebug
 
     - name: Salva l'APK da scaricare
       uses: actions/upload-artifact@v4
       with:
         name: Gemma-TPU-App
-        path: examples/llm_inference/android/app/build/outputs/apk/debug/app-debug.apk
+        path: examples/text_generation/android/app/build/outputs/apk/debug/app-debug.apk
         
