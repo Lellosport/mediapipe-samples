@@ -1,8 +1,6 @@
-name: Compila App Gemma TPU
+name: Compila App Test
 
 on:
-  push:
-    branches: [ "main" ]
   workflow_dispatch: 
 
 jobs:
@@ -21,16 +19,16 @@ jobs:
         cache: gradle
 
     - name: Dai i permessi a Gradle
-      run: chmod +x examples/text_generation/android/gradlew
+      run: chmod +x examples/text_summarizer/android/gradlew
 
     - name: Compila l'APK
       run: |
-        cd examples/text_generation/android
+        cd examples/text_summarizer/android
         ./gradlew assembleDebug
 
     - name: Salva l'APK da scaricare
       uses: actions/upload-artifact@v4
       with:
-        name: Gemma-TPU-App
-        path: examples/text_generation/android/app/build/outputs/apk/debug/app-debug.apk
+        name: Test-App
+        path: examples/text_summarizer/android/app/build/outputs/apk/debug/app-debug.apk
         
