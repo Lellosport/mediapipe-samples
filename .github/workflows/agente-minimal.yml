@@ -43,8 +43,8 @@ jobs:
                 applicationId = "com.agente.gemma"
                 minSdk = 31
                 targetSdk = 34
-                versionCode = 21
-                versionName = "8.1"
+                versionCode = 22
+                versionName = "8.2"
             }
             compileOptions {
                 sourceCompatibility = JavaVersion.VERSION_17
@@ -72,7 +72,6 @@ jobs:
             <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
             
             <application android:label="Gemini Agent" android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
-                <!-- Rimosso il ricevitore inesistente per evitare crash silenti -->
                 <activity android:name=".MainActivity" android:exported="true">
                     <intent-filter>
                         <action android:name="android.intent.action.MAIN" />
@@ -200,7 +199,13 @@ jobs:
                                 intent.putExtra("com.termux.RUN_COMMAND_BACKGROUND", true)
                                 intent.putExtra("com.termux.RUN_COMMAND_PENDING_INTENT", pendingIntent)
                                 
-                                startService(intent)
+                                // FIX: Utilizzo di startForegroundService per scavalcare il blocco di Android 8+
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                    startForegroundService(intent)
+                                } else {
+                                    startService(intent)
+                                }
+                                
                                 logView.append("✅ Inviato, in attesa di output...\n")
                             }
                         } catch (e: Exception) { 
