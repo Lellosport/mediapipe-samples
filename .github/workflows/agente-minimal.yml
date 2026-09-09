@@ -97,7 +97,7 @@ jobs:
                     try {
                         val modelFile = File(getExternalFilesDir(null), "gemma.bin")
                         if (!modelFile.exists()) { 
-                            runOnUiThread { textView.append("\n❌ ERRORE: Modello mancante.\nSposta il file gemma.task in questo percorso esatto:\n${modelFile.absolutePath}\n\nUsa il gestore file di Android per spostarlo.") }
+                            runOnUiThread { textView.append("\n❌ ERRORE: Modello mancante.\nSposta il file gemma.bin in questo percorso esatto:\n${modelFile.absolutePath}\n\nUsa il gestore file di Android per spostarlo.") }
                             return@Thread 
                         }
                         
