@@ -1,4 +1,4 @@
-name: Compila Agente Minimal
+name: Compila Agente Gemini Nano
 
 on:
   workflow_dispatch: 
@@ -16,7 +16,7 @@ jobs:
         java-version: '17'
         distribution: 'temurin'
 
-    - name: Crea la struttura nativa dell'App da zero
+    - name: Crea la struttura nativa dell'App
       run: |
         mkdir -p app/src/main/java/com/agente/gemma
         
@@ -27,7 +27,7 @@ jobs:
         cat << 'EOF' > settings.gradle.kts
         pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
         dependencyResolutionManagement { repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS); repositories { google(); mavenCentral() } }
-        rootProject.name = "GemmaAgent"
+        rootProject.name = "GeminiAgent"
         include(":app")
         EOF
         
@@ -41,10 +41,10 @@ jobs:
             compileSdk = 34
             defaultConfig { 
                 applicationId = "com.agente.gemma"
-                minSdk = 26
+                minSdk = 29
                 targetSdk = 34
-                versionCode = 1
-                versionName = "1.0"
+                versionCode = 2
+                versionName = "2.0"
             }
             compileOptions {
                 sourceCompatibility = JavaVersion.VERSION_17
@@ -54,14 +54,18 @@ jobs:
                 jvmTarget = "17"
             }
         }
-        dependencies { implementation("com.google.mediapipe:tasks-genai:0.10.14") }
+        dependencies { 
+            implementation("com.google.ai.edge.aicore:aicore:1.0.0-alpha01")
+            implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+            implementation("androidx.core:core-ktx:1.12.0")
+        }
         EOF
         
         cat << 'EOF' > app/src/main/AndroidManifest.xml
         <?xml version="1.0" encoding="utf-8"?>
         <manifest xmlns:android="http://schemas.android.com/apk/res/android">
             <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
-            <application android:label="Gemma Agent" android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+            <application android:label="Gemini Agent" android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
                 <activity android:name=".MainActivity" android:exported="true">
                     <intent-filter>
                         <action android:name="android.intent.action.MAIN" />
@@ -79,46 +83,47 @@ jobs:
         import android.os.Bundle
         import android.widget.TextView
         import android.widget.ScrollView
-        import com.google.mediapipe.tasks.genai.llminference.LlmInference
-        import java.io.File
+        import kotlinx.coroutines.*
+        import com.google.ai.edge.aicore.AiCoreClient
         
         class MainActivity : Activity() {
+            private val scope = CoroutineScope(Dispatchers.Main + Job())
+        
             override fun onCreate(savedInstanceState: Bundle?) {
                 super.onCreate(savedInstanceState)
                 
                 val textView = TextView(this).apply { 
-                    text = "--- Agente Gemma Inizializzato ---\n"
+                    text = "--- Agente Gemini Nano Inizializzato ---\n"
                     textSize = 16f
                     setPadding(32, 32, 32, 32) 
                 }
                 setContentView(ScrollView(this).apply { addView(textView) })
                 
-                Thread {
+                scope.launch {
                     try {
-                        val modelFile = File(getExternalFilesDir(null), "gemma.bin")
-                        if (!modelFile.exists()) { 
-                            runOnUiThread { textView.append("\n❌ ERRORE: Modello mancante.\nSposta il file gemma.bin in questo percorso esatto:\n${modelFile.absolutePath}\n\nUsa il gestore file di Android per spostarlo.") }
-                            return@Thread 
+                        textView.append("\nRichiesta accesso alla TPU tramite Android AICore...\n")
+                        
+                        val aiCoreClient = AiCoreClient.create(applicationContext)
+                        val model = aiCoreClient.getGenerativeModel("gemini-nano")
+                        
+                        textView.append("✅ Modello Gemini Nano agganciato!\n\nGenerazione comando in corso...\n")
+                        
+                        val prompt = "Sei un agente terminale. Qual è il comando Linux per vedere in quale cartella mi trovo? Rispondi solo ed esclusivamente con il comando, senza spiegazioni."
+                        
+                        val response = withContext(Dispatchers.IO) {
+                            model.generateContent(prompt)
                         }
                         
-                        runOnUiThread { textView.append("\n✅ Modello trovato! Caricamento in TPU/NPU in corso...\n") }
-                        
-                        val options = LlmInference.LlmInferenceOptions.builder()
-                            .setModelPath(modelFile.absolutePath)
-                            .setMaxTokens(50)
-                            .build()
-                            
-                        val llm = LlmInference.createFromOptions(this, options)
-                        runOnUiThread { textView.append("✅ Motore MediaPipe caricato!\n\nGenerazione...\n") }
-                        
-                        val prompt = "Sei un agente terminale. Qual è il comando Linux per vedere in quale cartella mi trovo? Rispondi solo con il comando."
-                        val response = llm.generateResponse(prompt)
-                        
-                        runOnUiThread { textView.append("\n🤖 Risposta di Gemma: $response\n\n[Pronto per collegarsi a Termux]") }
+                        textView.append("\n🤖 Comando generato: ${response.text}\n\n[Pronto per invio a Termux]")
                     } catch (e: Exception) { 
-                        runOnUiThread { textView.append("\nErrore di elaborazione: ${e.message}\n") } 
+                        textView.append("\nErrore di sistema: ${e.message}\n\nATTENZIONE: Assicurati di aver abilitato AICore nelle Opzioni Sviluppatore del tuo Pixel.")
                     }
-                }.start()
+                }
+            }
+            
+            override fun onDestroy() {
+                super.onDestroy()
+                scope.cancel()
             }
         }
         EOF
@@ -134,6 +139,6 @@ jobs:
     - name: Salva l'APK
       uses: actions/upload-artifact@v4
       with:
-        name: Agente-Gemma-Minimal
+        name: Agente-GeminiNano-TPU
         path: app/build/outputs/apk/debug/app-debug.apk
         
