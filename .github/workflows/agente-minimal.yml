@@ -43,8 +43,8 @@ jobs:
                 applicationId = "com.agente.gemma"
                 minSdk = 31
                 targetSdk = 34
-                versionCode = 16
-                versionName = "5.2"
+                versionCode = 17
+                versionName = "6.0"
             }
             compileOptions {
                 sourceCompatibility = JavaVersion.VERSION_17
@@ -82,8 +82,11 @@ jobs:
         import android.app.Activity
         import android.content.Intent
         import android.os.Bundle
-        import android.widget.TextView
+        import android.widget.Button
+        import android.widget.EditText
+        import android.widget.LinearLayout
         import android.widget.ScrollView
+        import android.widget.TextView
         import kotlinx.coroutines.*
         import com.google.mlkit.genai.prompt.Generation
         
@@ -93,45 +96,71 @@ jobs:
             override fun onCreate(savedInstanceState: Bundle?) {
                 super.onCreate(savedInstanceState)
                 
-                val textView = TextView(this).apply { 
-                    text = "--- Agente Gemini Nano 3 (ML Kit Edition) ---\n"
-                    textSize = 15f
-                    setPadding(32, 32, 32, 32) 
+                val layout = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(48, 48, 48, 48)
                 }
-                setContentView(ScrollView(this).apply { addView(textView) })
                 
-                scope.launch {
-                    try {
-                        textView.append("\nInizializzazione ML Kit Prompt API...\n")
-                        
-                        val model = Generation.getClient()
-                        
-                        textView.append("✅ ML Kit agganciato alla TPU!\n\nGenerazione comando in corso...\n")
-                        
-                        val prompt = "Sei un agente terminale Linux. Qual è il comando per vedere in quale cartella mi trovo? Rispondi SOLO con il comando, senza markdown, senza virgolette e senza spiegazioni."
-                        
-                        val response = withContext(Dispatchers.IO) {
-                            model.generateContent(prompt)
+                val logView = TextView(this).apply { 
+                    text = "--- Agente Gemini Nano Interattivo ---\nConnessione alla TPU pronta.\n\n"
+                    textSize = 15f
+                }
+                
+                val inputField = EditText(this).apply {
+                    hint = "Es: crea una cartella chiamata Progetti"
+                    textSize = 16f
+                }
+                
+                val submitButton = Button(this).apply {
+                    text = "Genera ed Esegui"
+                }
+                
+                layout.addView(inputField)
+                layout.addView(submitButton)
+                layout.addView(logView)
+                
+                setContentView(ScrollView(this).apply { addView(layout) })
+                
+                val model = Generation.getClient()
+                
+                submitButton.setOnClickListener {
+                    val userRequest = inputField.text.toString()
+                    if (userRequest.isBlank()) return@setOnClickListener
+                    
+                    submitButton.isEnabled = false
+                    logView.append("⏳ Richiesta: $userRequest\n")
+                    
+                    scope.launch {
+                        try {
+                            val prompt = "Sei un agente terminale Linux. L'utente chiede: '$userRequest'. Rispondi SOLO con il comando bash corrispondente, senza markdown, senza virgolette e senza spiegazioni."
+                            
+                            val response = withContext(Dispatchers.IO) {
+                                model.generateContent(prompt)
+                            }
+                            
+                            val generatedCommand = response.candidates.firstOrNull()?.text?.trim()
+                            
+                            if (!generatedCommand.isNullOrEmpty()) {
+                                logView.append("🤖 Comando: $generatedCommand\n")
+                                
+                                val intent = Intent("com.termux.RUN_COMMAND")
+                                intent.setClassName("com.termux", "com.termux.app.RunCommandService")
+                                intent.putExtra("com.termux.RUN_COMMAND_PATH", "/data/data/com.termux/files/usr/bin/sh")
+                                intent.putExtra("com.termux.RUN_COMMAND_ARGUMENTS", arrayOf("-c", generatedCommand))
+                                intent.putExtra("com.termux.RUN_COMMAND_WORKDIR", "/data/data/com.termux/files/home")
+                                intent.putExtra("com.termux.RUN_COMMAND_BACKGROUND", false)
+                                
+                                startService(intent)
+                                logView.append("✅ Eseguito in Termux!\n\n")
+                            } else {
+                                logView.append("⚠️ La TPU non ha generato un comando valido.\n\n")
+                            }
+                        } catch (e: Exception) { 
+                            logView.append("❌ Errore TPU: ${e.message}\n\n")
+                        } finally {
+                            submitButton.isEnabled = true
+                            inputField.text.clear()
                         }
-                        
-                        // FIX: Estrazione esatta del testo dalla struttura di ML Kit!
-                        val generatedCommand = response.candidates.firstOrNull()?.text?.trim() ?: "pwd"
-                        
-                        textView.append("\n🤖 Comando generato: $generatedCommand\n\nInvio a Termux in corso...")
-                        
-                        // PONTE TERMUX
-                        val intent = Intent("com.termux.RUN_COMMAND")
-                        intent.setClassName("com.termux", "com.termux.app.RunCommandService")
-                        intent.putExtra("com.termux.RUN_COMMAND_PATH", "/data/data/com.termux/files/usr/bin/sh")
-                        intent.putExtra("com.termux.RUN_COMMAND_ARGUMENTS", arrayOf("-c", generatedCommand))
-                        intent.putExtra("com.termux.RUN_COMMAND_WORKDIR", "/data/data/com.termux/files/home")
-                        intent.putExtra("com.termux.RUN_COMMAND_BACKGROUND", false)
-                        
-                        startService(intent)
-                        textView.append("\n\n✅ Comando '$generatedCommand' iniettato in Termux!")
-                        
-                    } catch (e: Exception) { 
-                        textView.append("\nErrore runtime ML Kit: ${e.message}\n")
                     }
                 }
             }
