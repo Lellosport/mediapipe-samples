@@ -43,8 +43,8 @@ jobs:
                 applicationId = "com.agente.gemma"
                 minSdk = 31
                 targetSdk = 34
-                versionCode = 12
-                versionName = "4.0"
+                versionCode = 13
+                versionName = "4.1"
             }
             compileOptions {
                 sourceCompatibility = JavaVersion.VERSION_17
@@ -55,8 +55,7 @@ jobs:
             }
         }
         dependencies { 
-            // Usa il nuovo SDK del 2026 aggiornato per i modelli Nano v3 e v4
-            implementation("com.google.ai.edge.aicore:aicore:1.0.0-alpha05")
+            implementation("com.google.ai.edge.aicore:aicore:0.0.1-exp02")
             implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
             implementation("androidx.core:core-ktx:1.12.0")
         }
@@ -87,6 +86,7 @@ jobs:
         import android.widget.ScrollView
         import kotlinx.coroutines.*
         import com.google.ai.edge.aicore.GenerativeModel
+        import com.google.ai.edge.aicore.generationConfig
         
         class MainActivity : Activity() {
             private val scope = CoroutineScope(Dispatchers.Main + Job())
@@ -103,10 +103,16 @@ jobs:
                 
                 scope.launch {
                     try {
-                        textView.append("\nInizializzazione SDK AI Edge per i nuovi modelli EAP...\n")
+                        textView.append("\nInizializzazione SDK AI Edge...\n")
                         
-                        // Il nuovo SDK permette di chiamare direttamente il nome in codice del modello (nano-v4-fast o nano-v3)
-                        val model = GenerativeModel("nano-v4-fast", applicationContext)
+                        val model = GenerativeModel(
+                            generationConfig = generationConfig {
+                                context = applicationContext
+                                temperature = 0.0f
+                                topK = 1
+                                maxOutputTokens = 128
+                            }
+                        )
                         
                         textView.append("✅ Modello agganciato alla TPU!\n\nGenerazione comando in corso...\n")
                         
