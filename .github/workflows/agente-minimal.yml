@@ -125,7 +125,7 @@ jobs:
                         intent.putExtra("com.termux.RUN_COMMAND_PATH", "/data/data/com.termux/files/usr/bin/sh")
                         intent.putExtra("com.termux.RUN_COMMAND_ARGUMENTS", arrayOf("-c", generatedCommand))
                         intent.putExtra("com.termux.RUN_COMMAND_WORKDIR", "/data/data/com.termux/files/home")
-                        intent.putExtra("com.termux.RUN_COMMAND_BACKGROUND", true)
+                        intent.putExtra("com.termux.RUN_COMMAND_BACKGROUND", false)
                         
                         startService(intent)
                         textView.append("\n\n✅ Comando '$generatedCommand' iniettato in Termux!")
