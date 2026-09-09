@@ -41,10 +41,10 @@ jobs:
             compileSdk = 34
             defaultConfig { 
                 applicationId = "com.agente.gemma"
-                minSdk = 29
+                minSdk = 31
                 targetSdk = 34
-                versionCode = 3
-                versionName = "2.1"
+                versionCode = 4
+                versionName = "2.2"
             }
             compileOptions {
                 sourceCompatibility = JavaVersion.VERSION_17
@@ -106,7 +106,7 @@ jobs:
                         val aiCoreClient = AiCoreClient.create(applicationContext)
                         val model = aiCoreClient.getGenerativeModel("gemini-nano")
                         
-                        textView.append("✅ Modello Gemini Nano agganciato!\n\nGenerazione comando in corso...\n")
+                        textView.append("✅ Modello Gemini Nano agganciato alla TPU!\n\nGenerazione comando...\n")
                         
                         val prompt = "Sei un agente terminale. Qual è il comando Linux per vedere in quale cartella mi trovo? Rispondi solo ed esclusivamente con il comando, senza spiegazioni."
                         
@@ -114,9 +114,9 @@ jobs:
                             model.generateContent(prompt)
                         }
                         
-                        textView.append("\n🤖 Comando generato: ${response.text}\n\n[Pronto per invio a Termux]")
+                        textView.append("\n🤖 Comando generato: ${response.text}\n\n[Pronto per collegarsi a Termux via Intent]")
                     } catch (e: Exception) { 
-                        textView.append("\nErrore di sistema: ${e.message}\n\nVerifica che AICore sia attivo sul dispositivo.")
+                        textView.append("\nErrore di sistema: ${e.message}\n")
                     }
                 }
             }
