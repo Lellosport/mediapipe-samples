@@ -43,8 +43,8 @@ jobs:
                 applicationId = "com.agente.gemma"
                 minSdk = 31
                 targetSdk = 34
-                versionCode = 20
-                versionName = "8.0"
+                versionCode = 21
+                versionName = "8.1"
             }
             compileOptions {
                 sourceCompatibility = JavaVersion.VERSION_17
@@ -72,13 +72,7 @@ jobs:
             <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
             
             <application android:label="Gemini Agent" android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
-                <!-- Ricevitore per i messaggi di ritorno da Termux -->
-                <receiver android:name=".TermuxReceiver" android:exported="true">
-                    <intent-filter>
-                        <action android:name="com.agente.gemma.RESULT" />
-                    </intent-filter>
-                </receiver>
-
+                <!-- Rimosso il ricevitore inesistente per evitare crash silenti -->
                 <activity android:name=".MainActivity" android:exported="true">
                     <intent-filter>
                         <action android:name="android.intent.action.MAIN" />
@@ -113,15 +107,15 @@ jobs:
             private val scope = CoroutineScope(Dispatchers.Main + Job())
             private lateinit var logView: TextView
         
-            // Ricevitore che cattura la risposta da Termux
             private val termuxReceiver = object : BroadcastReceiver() {
                 override fun onReceive(context: Context, intent: Intent) {
                     val bundle = intent.extras
                     if (bundle != null) {
                         logView.append("\n📥 RITORNO DA TERMUX:\n")
-                        for (key in bundle.keySet()) {
-                            logView.append("$key: ${bundle.get(key)}\n")
-                        }
+                        logView.append("Exit Code: ${bundle.getInt("com.termux.RUN_COMMAND_EXIT_CODE")}\n")
+                        logView.append("Output: ${bundle.getString("com.termux.RUN_COMMAND_STDOUT") ?: "Nessuno"}\n")
+                        val err = bundle.getString("com.termux.RUN_COMMAND_STDERR")
+                        if (!err.isNullOrEmpty()) logView.append("Errore: $err\n")
                         logView.append("-------------------\n")
                     }
                 }
@@ -130,7 +124,6 @@ jobs:
             override fun onCreate(savedInstanceState: Bundle?) {
                 super.onCreate(savedInstanceState)
                 
-                // Registra il ricevitore per ascoltare Termux
                 val filter = IntentFilter("com.agente.gemma.RESULT")
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     registerReceiver(termuxReceiver, filter, Context.RECEIVER_EXPORTED)
@@ -189,9 +182,9 @@ jobs:
                             if (!generatedCommand.isNullOrEmpty()) {
                                 logView.append("🤖 Comando: $generatedCommand\n")
                                 
-                                // Creiamo la busta di ritorno
                                 val resultIntent = Intent("com.agente.gemma.RESULT")
                                 resultIntent.setPackage(packageName)
+                                
                                 val pendingIntent = PendingIntent.getBroadcast(
                                     this@MainActivity, 
                                     0, 
@@ -204,7 +197,7 @@ jobs:
                                 intent.putExtra("com.termux.RUN_COMMAND_PATH", "/data/data/com.termux/files/usr/bin/sh")
                                 intent.putExtra("com.termux.RUN_COMMAND_ARGUMENTS", arrayOf("-c", generatedCommand))
                                 intent.putExtra("com.termux.RUN_COMMAND_WORKDIR", "/data/data/com.termux/files/home")
-                                intent.putExtra("com.termux.RUN_COMMAND_BACKGROUND", true) // Lasciamo in background per testare il ritorno
+                                intent.putExtra("com.termux.RUN_COMMAND_BACKGROUND", true)
                                 intent.putExtra("com.termux.RUN_COMMAND_PENDING_INTENT", pendingIntent)
                                 
                                 startService(intent)
