@@ -43,8 +43,8 @@ jobs:
                 applicationId = "com.agente.gemma"
                 minSdk = 31
                 targetSdk = 34
-                versionCode = 6
-                versionName = "2.4"
+                versionCode = 7
+                versionName = "2.5"
             }
             compileOptions {
                 sourceCompatibility = JavaVersion.VERSION_17
@@ -85,6 +85,8 @@ jobs:
         import android.widget.ScrollView
         import kotlinx.coroutines.*
         import com.google.ai.edge.aicore.GenerativeModel
+        import com.google.ai.edge.aicore.GenerationConfig
+        import com.google.ai.edge.aicore.DownloadConfig
         
         class MainActivity : Activity() {
             private val scope = CoroutineScope(Dispatchers.Main + Job())
@@ -103,7 +105,10 @@ jobs:
                     try {
                         textView.append("\nRichiesta accesso alla TPU tramite Android AICore...\n")
                         
-                        val model = GenerativeModel("gemini-nano", applicationContext)
+                        val model = GenerativeModel(
+                            GenerationConfig.Builder().build(),
+                            DownloadConfig.Builder().build()
+                        )
                         
                         textView.append("✅ Modello Gemini Nano agganciato alla TPU!\n\nGenerazione comando...\n")
                         
