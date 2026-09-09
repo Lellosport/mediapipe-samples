@@ -43,8 +43,8 @@ jobs:
                 applicationId = "com.agente.gemma"
                 minSdk = 31
                 targetSdk = 34
-                versionCode = 19
-                versionName = "7.0"
+                versionCode = 20
+                versionName = "8.0"
             }
             compileOptions {
                 sourceCompatibility = JavaVersion.VERSION_17
@@ -65,7 +65,6 @@ jobs:
         <?xml version="1.0" encoding="utf-8"?>
         <manifest xmlns:android="http://schemas.android.com/apk/res/android">
             
-            <!-- 1. Rendiamo Termux visibile alla nostra App -->
             <queries>
                 <package android:name="com.termux" />
             </queries>
@@ -73,6 +72,13 @@ jobs:
             <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
             
             <application android:label="Gemini Agent" android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+                <!-- Ricevitore per i messaggi di ritorno da Termux -->
+                <receiver android:name=".TermuxReceiver" android:exported="true">
+                    <intent-filter>
+                        <action android:name="com.agente.gemma.RESULT" />
+                    </intent-filter>
+                </receiver>
+
                 <activity android:name=".MainActivity" android:exported="true">
                     <intent-filter>
                         <action android:name="android.intent.action.MAIN" />
@@ -87,8 +93,13 @@ jobs:
         package com.agente.gemma
         
         import android.app.Activity
+        import android.app.PendingIntent
+        import android.content.BroadcastReceiver
+        import android.content.Context
         import android.content.Intent
+        import android.content.IntentFilter
         import android.content.pm.PackageManager
+        import android.os.Build
         import android.os.Bundle
         import android.widget.Button
         import android.widget.EditText
@@ -100,11 +111,33 @@ jobs:
         
         class MainActivity : Activity() {
             private val scope = CoroutineScope(Dispatchers.Main + Job())
+            private lateinit var logView: TextView
+        
+            // Ricevitore che cattura la risposta da Termux
+            private val termuxReceiver = object : BroadcastReceiver() {
+                override fun onReceive(context: Context, intent: Intent) {
+                    val bundle = intent.extras
+                    if (bundle != null) {
+                        logView.append("\n📥 RITORNO DA TERMUX:\n")
+                        for (key in bundle.keySet()) {
+                            logView.append("$key: ${bundle.get(key)}\n")
+                        }
+                        logView.append("-------------------\n")
+                    }
+                }
+            }
         
             override fun onCreate(savedInstanceState: Bundle?) {
                 super.onCreate(savedInstanceState)
                 
-                // 2. Forza Android a farti accettare il permesso a schermo
+                // Registra il ricevitore per ascoltare Termux
+                val filter = IntentFilter("com.agente.gemma.RESULT")
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    registerReceiver(termuxReceiver, filter, Context.RECEIVER_EXPORTED)
+                } else {
+                    registerReceiver(termuxReceiver, filter)
+                }
+                
                 if (checkSelfPermission("com.termux.permission.RUN_COMMAND") != PackageManager.PERMISSION_GRANTED) {
                     requestPermissions(arrayOf("com.termux.permission.RUN_COMMAND"), 1)
                 }
@@ -114,8 +147,8 @@ jobs:
                     setPadding(48, 48, 48, 48)
                 }
                 
-                val logView = TextView(this).apply { 
-                    text = "--- Agente Gemini Nano Interattivo ---\nConnessione alla TPU pronta.\n\n"
+                logView = TextView(this).apply { 
+                    text = "--- Agente Gemini Nano (Bidirezionale) ---\n\n"
                     textSize = 15f
                 }
                 
@@ -125,7 +158,7 @@ jobs:
                 }
                 
                 val submitButton = Button(this).apply {
-                    text = "Genera ed Esegui"
+                    text = "Invia e Attendi Risposta"
                 }
                 
                 layout.addView(inputField)
@@ -141,7 +174,7 @@ jobs:
                     if (userRequest.isBlank()) return@setOnClickListener
                     
                     submitButton.isEnabled = false
-                    logView.append("⏳ Richiesta: $userRequest\n")
+                    logView.append("⏳ Prompt: $userRequest\n")
                     
                     scope.launch {
                         try {
@@ -156,25 +189,29 @@ jobs:
                             if (!generatedCommand.isNullOrEmpty()) {
                                 logView.append("🤖 Comando: $generatedCommand\n")
                                 
+                                // Creiamo la busta di ritorno
+                                val resultIntent = Intent("com.agente.gemma.RESULT")
+                                resultIntent.setPackage(packageName)
+                                val pendingIntent = PendingIntent.getBroadcast(
+                                    this@MainActivity, 
+                                    0, 
+                                    resultIntent, 
+                                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
+                                )
+                                
                                 val intent = Intent("com.termux.RUN_COMMAND")
                                 intent.setClassName("com.termux", "com.termux.app.RunCommandService")
                                 intent.putExtra("com.termux.RUN_COMMAND_PATH", "/data/data/com.termux/files/usr/bin/sh")
                                 intent.putExtra("com.termux.RUN_COMMAND_ARGUMENTS", arrayOf("-c", generatedCommand))
                                 intent.putExtra("com.termux.RUN_COMMAND_WORKDIR", "/data/data/com.termux/files/home")
-                                intent.putExtra("com.termux.RUN_COMMAND_BACKGROUND", false)
+                                intent.putExtra("com.termux.RUN_COMMAND_BACKGROUND", true) // Lasciamo in background per testare il ritorno
+                                intent.putExtra("com.termux.RUN_COMMAND_PENDING_INTENT", pendingIntent)
+                                
                                 startService(intent)
-                                
-                                val termuxLaunchIntent = packageManager.getLaunchIntentForPackage("com.termux")
-                                if (termuxLaunchIntent != null) {
-                                    startActivity(termuxLaunchIntent)
-                                }
-                                
-                                logView.append("✅ Eseguito a schermo!\n\n")
-                            } else {
-                                logView.append("⚠️ La TPU non ha generato un comando valido.\n\n")
+                                logView.append("✅ Inviato, in attesa di output...\n")
                             }
                         } catch (e: Exception) { 
-                            logView.append("❌ Errore TPU: ${e.message}\n\n")
+                            logView.append("❌ Errore TPU: ${e.message}\n")
                         } finally {
                             submitButton.isEnabled = true
                             inputField.text.clear()
@@ -185,6 +222,7 @@ jobs:
             
             override fun onDestroy() {
                 super.onDestroy()
+                unregisterReceiver(termuxReceiver)
                 scope.cancel()
             }
         }
