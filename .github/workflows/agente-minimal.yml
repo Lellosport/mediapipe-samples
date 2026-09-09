@@ -43,8 +43,8 @@ jobs:
                 applicationId = "com.agente.gemma"
                 minSdk = 31
                 targetSdk = 34
-                versionCode = 14
-                versionName = "5.0"
+                versionCode = 15
+                versionName = "5.1"
             }
             compileOptions {
                 sourceCompatibility = JavaVersion.VERSION_17
@@ -55,7 +55,6 @@ jobs:
             }
         }
         dependencies { 
-            // Nuova libreria ufficiale ML Kit Prompt API per i modelli Nano 3 e 4
             implementation("com.google.mlkit:genai-prompt:1.0.0-beta2")
             implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
             implementation("androidx.core:core-ktx:1.12.0")
@@ -105,7 +104,6 @@ jobs:
                     try {
                         textView.append("\nInizializzazione ML Kit Prompt API...\n")
                         
-                        // ML Kit gestisce nativamente e in automatico l'instradamento al nuovo modello
                         val model = Generation.getClient()
                         
                         textView.append("✅ ML Kit agganciato alla TPU!\n\nGenerazione comando in corso...\n")
@@ -116,8 +114,10 @@ jobs:
                             model.generateContent(prompt)
                         }
                         
-                        val generatedCommand = response.text?.trim() ?: "pwd"
-                        textView.append("\n🤖 Comando generato: \$generatedCommand\n\nInvio a Termux in corso...")
+                        // Fix applicato: conversione diretta in stringa
+                        val generatedCommand = response.toString().trim().ifEmpty { "pwd" }
+                        
+                        textView.append("\n🤖 Comando generato: $generatedCommand\n\nInvio a Termux in corso...")
                         
                         // PONTE TERMUX
                         val intent = Intent("com.termux.RUN_COMMAND")
@@ -128,10 +128,10 @@ jobs:
                         intent.putExtra("com.termux.RUN_COMMAND_BACKGROUND", true)
                         
                         startService(intent)
-                        textView.append("\n\n✅ Comando '\$generatedCommand' iniettato in Termux!")
+                        textView.append("\n\n✅ Comando '$generatedCommand' iniettato in Termux!")
                         
                     } catch (e: Exception) { 
-                        textView.append("\nErrore runtime ML Kit: \${e.message}\n")
+                        textView.append("\nErrore runtime ML Kit: ${e.message}\n")
                     }
                 }
             }
