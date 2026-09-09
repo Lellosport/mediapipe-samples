@@ -43,8 +43,8 @@ jobs:
                 applicationId = "com.agente.gemma"
                 minSdk = 31
                 targetSdk = 34
-                versionCode = 8
-                versionName = "2.6"
+                versionCode = 9
+                versionName = "3.0"
             }
             compileOptions {
                 sourceCompatibility = JavaVersion.VERSION_17
@@ -84,9 +84,6 @@ jobs:
         import android.widget.TextView
         import android.widget.ScrollView
         import kotlinx.coroutines.*
-        import com.google.ai.edge.aicore.GenerativeModel
-        import com.google.ai.edge.aicore.GenerationConfig
-        import com.google.ai.edge.aicore.DownloadConfig
         
         class MainActivity : Activity() {
             private val scope = CoroutineScope(Dispatchers.Main + Job())
@@ -96,28 +93,59 @@ jobs:
                 
                 val textView = TextView(this).apply { 
                     text = "--- Agente Gemini Nano Inizializzato ---\n"
-                    textSize = 16f
+                    textSize = 15f
                     setPadding(32, 32, 32, 32) 
                 }
                 setContentView(ScrollView(this).apply { addView(textView) })
                 
                 scope.launch {
                     try {
-                        textView.append("\nRichiesta accesso alla TPU tramite Android AICore...\n")
+                        textView.append("\nAggiramento del compilatore tramite Reflection in corso...\n")
                         
-                        val model = GenerativeModel(GenerationConfig(), DownloadConfig())
-                        
-                        textView.append("✅ Modello Gemini Nano agganciato alla TPU!\n\nGenerazione comando...\n")
-                        
-                        val prompt = "Sei un agente terminale. Qual è il comando Linux per vedere in quale cartella mi trovo? Rispondi solo ed esclusivamente con il comando, senza spiegazioni."
-                        
-                        val response = withContext(Dispatchers.IO) {
-                            model.generateContent(prompt)
+                        val responseText = withContext(Dispatchers.IO) {
+                            try {
+                                // Tentativo 1: API AiCoreClient Classica
+                                val clientClass = Class.forName("com.google.android.apps.aicore.client.AiCoreClient")
+                                val createMethod = clientClass.getMethod("create", android.content.Context::class.java)
+                                val aiCoreClient = createMethod.invoke(null, applicationContext)
+                                
+                                val getModelMethod = clientClass.getMethod("getGenerativeModel", String::class.java)
+                                val model = getModelMethod.invoke(aiCoreClient, "gemini-nano")
+                                
+                                val generateMethod = model.javaClass.getMethod("generateContent", String::class.java)
+                                val response = generateMethod.invoke(model, "Sei un agente terminale. Rispondi solo ed esclusivamente con il comando Linux per vedere la cartella corrente.")
+                                val textMethod = response.javaClass.getMethod("getText")
+                                textMethod.invoke(response) as String
+                            } catch (e: Exception) {
+                                // Tentativo 2: Forzatura Builder GenerativeModel (Google AI Edge SDK)
+                                val genConfigClass = Class.forName("com.google.ai.edge.aicore.GenerationConfig")
+                                val genBuilder = genConfigClass.getMethod("builder").invoke(null)
+                                val genConfig = genBuilder.javaClass.getMethod("build").invoke(genBuilder)
+                                
+                                val downConfigClass = Class.forName("com.google.ai.edge.aicore.DownloadConfig")
+                                val downBuilder = downConfigClass.getMethod("builder").invoke(null)
+                                val downConfig = downBuilder.javaClass.getMethod("build").invoke(downBuilder)
+                                
+                                val modelClass = Class.forName("com.google.ai.edge.aicore.GenerativeModel")
+                                val modelConstructor = modelClass.getConstructor(genConfigClass, downConfigClass)
+                                val model = modelConstructor.newInstance(genConfig, downConfig)
+                                
+                                val generateMethod = modelClass.getMethod("generateContent", String::class.java)
+                                val response = generateMethod.invoke(model, "Sei un agente terminale. Rispondi solo ed esclusivamente con il comando Linux per vedere la cartella corrente.")
+                                val textMethod = response.javaClass.getMethod("getText")
+                                textMethod.invoke(response) as String
+                            }
                         }
                         
-                        textView.append("\n🤖 Comando generato: ${response.text}\n\n[Pronto per collegarsi a Termux via Intent]")
+                        textView.append("\n✅ Modello agganciato alla TPU!\n\n🤖 Comando generato: $responseText\n\n[Pronto per invio a Termux via Intent]")
+                        
                     } catch (e: Exception) { 
-                        textView.append("\nErrore di sistema: ${e.message}\n")
+                        textView.append("\nErrore runtime di sistema: ${e.message}\n")
+                        try {
+                             // Se fallisce, stampiamo a schermo i metodi esatti che la libreria contiene
+                             val methods = Class.forName("com.google.ai.edge.aicore.GenerationConfig").declaredMethods.joinToString { it.name }
+                             textView.append("\nDebug Strutturale: $methods")
+                        } catch (ex: Exception) {}
                     }
                 }
             }
