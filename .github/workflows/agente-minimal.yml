@@ -43,8 +43,8 @@ jobs:
                 applicationId = "com.agente.gemma"
                 minSdk = 31
                 targetSdk = 34
-                versionCode = 17
-                versionName = "6.0"
+                versionCode = 18
+                versionName = "6.1"
             }
             compileOptions {
                 sourceCompatibility = JavaVersion.VERSION_17
@@ -143,15 +143,22 @@ jobs:
                             if (!generatedCommand.isNullOrEmpty()) {
                                 logView.append("🤖 Comando: $generatedCommand\n")
                                 
+                                // 1. Inietta il comando nel servizio in background di Termux
                                 val intent = Intent("com.termux.RUN_COMMAND")
                                 intent.setClassName("com.termux", "com.termux.app.RunCommandService")
                                 intent.putExtra("com.termux.RUN_COMMAND_PATH", "/data/data/com.termux/files/usr/bin/sh")
                                 intent.putExtra("com.termux.RUN_COMMAND_ARGUMENTS", arrayOf("-c", generatedCommand))
                                 intent.putExtra("com.termux.RUN_COMMAND_WORKDIR", "/data/data/com.termux/files/home")
                                 intent.putExtra("com.termux.RUN_COMMAND_BACKGROUND", false)
-                                
                                 startService(intent)
-                                logView.append("✅ Eseguito in Termux!\n\n")
+                                
+                                // 2. Forza Android ad aprire l'interfaccia visiva di Termux
+                                val termuxLaunchIntent = packageManager.getLaunchIntentForPackage("com.termux")
+                                if (termuxLaunchIntent != null) {
+                                    startActivity(termuxLaunchIntent)
+                                }
+                                
+                                logView.append("✅ Eseguito a schermo!\n\n")
                             } else {
                                 logView.append("⚠️ La TPU non ha generato un comando valido.\n\n")
                             }
