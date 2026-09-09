@@ -43,8 +43,8 @@ jobs:
                 applicationId = "com.agente.gemma"
                 minSdk = 31
                 targetSdk = 34
-                versionCode = 9
-                versionName = "3.0"
+                versionCode = 10
+                versionName = "3.1"
             }
             compileOptions {
                 sourceCompatibility = JavaVersion.VERSION_17
@@ -80,10 +80,13 @@ jobs:
         package com.agente.gemma
         
         import android.app.Activity
+        import android.content.Intent
         import android.os.Bundle
         import android.widget.TextView
         import android.widget.ScrollView
         import kotlinx.coroutines.*
+        import com.google.ai.edge.aicore.GenerativeModel
+        import com.google.ai.edge.aicore.generationConfig
         
         class MainActivity : Activity() {
             private val scope = CoroutineScope(Dispatchers.Main + Job())
@@ -100,52 +103,39 @@ jobs:
                 
                 scope.launch {
                     try {
-                        textView.append("\nAggiramento del compilatore tramite Reflection in corso...\n")
+                        textView.append("\nRichiesta accesso alla TPU tramite Android AICore...\n")
                         
-                        val responseText = withContext(Dispatchers.IO) {
-                            try {
-                                // Tentativo 1: API AiCoreClient Classica
-                                val clientClass = Class.forName("com.google.android.apps.aicore.client.AiCoreClient")
-                                val createMethod = clientClass.getMethod("create", android.content.Context::class.java)
-                                val aiCoreClient = createMethod.invoke(null, applicationContext)
-                                
-                                val getModelMethod = clientClass.getMethod("getGenerativeModel", String::class.java)
-                                val model = getModelMethod.invoke(aiCoreClient, "gemini-nano")
-                                
-                                val generateMethod = model.javaClass.getMethod("generateContent", String::class.java)
-                                val response = generateMethod.invoke(model, "Sei un agente terminale. Rispondi solo ed esclusivamente con il comando Linux per vedere la cartella corrente.")
-                                val textMethod = response.javaClass.getMethod("getText")
-                                textMethod.invoke(response) as String
-                            } catch (e: Exception) {
-                                // Tentativo 2: Forzatura Builder GenerativeModel (Google AI Edge SDK)
-                                val genConfigClass = Class.forName("com.google.ai.edge.aicore.GenerationConfig")
-                                val genBuilder = genConfigClass.getMethod("builder").invoke(null)
-                                val genConfig = genBuilder.javaClass.getMethod("build").invoke(genBuilder)
-                                
-                                val downConfigClass = Class.forName("com.google.ai.edge.aicore.DownloadConfig")
-                                val downBuilder = downConfigClass.getMethod("builder").invoke(null)
-                                val downConfig = downBuilder.javaClass.getMethod("build").invoke(downBuilder)
-                                
-                                val modelClass = Class.forName("com.google.ai.edge.aicore.GenerativeModel")
-                                val modelConstructor = modelClass.getConstructor(genConfigClass, downConfigClass)
-                                val model = modelConstructor.newInstance(genConfig, downConfig)
-                                
-                                val generateMethod = modelClass.getMethod("generateContent", String::class.java)
-                                val response = generateMethod.invoke(model, "Sei un agente terminale. Rispondi solo ed esclusivamente con il comando Linux per vedere la cartella corrente.")
-                                val textMethod = response.javaClass.getMethod("getText")
-                                textMethod.invoke(response) as String
+                        // Inizializzazione corretta nativa tramite DSL Kotlin
+                        val model = GenerativeModel(
+                            generationConfig = generationConfig {
+                                context = applicationContext
                             }
+                        )
+                        
+                        textView.append("✅ Modello Gemini Nano agganciato alla TPU!\n\nGenerazione comando...\n")
+                        
+                        val prompt = "Sei un agente terminale Linux. Qual è il comando per vedere in quale cartella mi trovo? Rispondi SOLO con il comando, senza markdown, senza virgolette e senza spiegazioni."
+                        
+                        val response = withContext(Dispatchers.IO) {
+                            model.generateContent(prompt)
                         }
                         
-                        textView.append("\n✅ Modello agganciato alla TPU!\n\n🤖 Comando generato: $responseText\n\n[Pronto per invio a Termux via Intent]")
+                        val generatedCommand = response.text?.trim() ?: "nessun comando"
+                        textView.append("\n🤖 Comando generato: $generatedCommand\n\nInvio a Termux in corso...")
+                        
+                        // ---- PONTE TERMUX ----
+                        val intent = Intent("com.termux.RUN_COMMAND")
+                        intent.setClassName("com.termux", "com.termux.app.RunCommandService")
+                        intent.putExtra("com.termux.RUN_COMMAND_PATH", "/data/data/com.termux/files/usr/bin/sh")
+                        intent.putExtra("com.termux.RUN_COMMAND_ARGUMENTS", arrayOf("-c", generatedCommand))
+                        intent.putExtra("com.termux.RUN_COMMAND_WORKDIR", "/data/data/com.termux/files/home")
+                        intent.putExtra("com.termux.RUN_COMMAND_BACKGROUND", true) // Esegue senza aprire fisicamente la schermata di Termux
+                        
+                        startService(intent)
+                        textView.append("\n\n✅ Comando inviato con successo a Termux!")
                         
                     } catch (e: Exception) { 
                         textView.append("\nErrore runtime di sistema: ${e.message}\n")
-                        try {
-                             // Se fallisce, stampiamo a schermo i metodi esatti che la libreria contiene
-                             val methods = Class.forName("com.google.ai.edge.aicore.GenerationConfig").declaredMethods.joinToString { it.name }
-                             textView.append("\nDebug Strutturale: $methods")
-                        } catch (ex: Exception) {}
                     }
                 }
             }
@@ -168,6 +158,6 @@ jobs:
     - name: Salva l'APK
       uses: actions/upload-artifact@v4
       with:
-        name: Agente-GeminiNano-TPU
+        name: Agente-GeminiNano-Termux
         path: app/build/outputs/apk/debug/app-debug.apk
         
