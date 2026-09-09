@@ -43,8 +43,8 @@ jobs:
                 applicationId = "com.agente.gemma"
                 minSdk = 31
                 targetSdk = 34
-                versionCode = 7
-                versionName = "2.5"
+                versionCode = 8
+                versionName = "2.6"
             }
             compileOptions {
                 sourceCompatibility = JavaVersion.VERSION_17
@@ -105,10 +105,7 @@ jobs:
                     try {
                         textView.append("\nRichiesta accesso alla TPU tramite Android AICore...\n")
                         
-                        val model = GenerativeModel(
-                            GenerationConfig.Builder().build(),
-                            DownloadConfig.Builder().build()
-                        )
+                        val model = GenerativeModel(GenerationConfig(), DownloadConfig())
                         
                         textView.append("✅ Modello Gemini Nano agganciato alla TPU!\n\nGenerazione comando...\n")
                         
