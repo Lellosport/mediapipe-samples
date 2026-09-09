@@ -43,8 +43,8 @@ jobs:
                 applicationId = "com.agente.gemma"
                 minSdk = 31
                 targetSdk = 34
-                versionCode = 15
-                versionName = "5.1"
+                versionCode = 16
+                versionName = "5.2"
             }
             compileOptions {
                 sourceCompatibility = JavaVersion.VERSION_17
@@ -114,8 +114,8 @@ jobs:
                             model.generateContent(prompt)
                         }
                         
-                        // Fix applicato: conversione diretta in stringa
-                        val generatedCommand = response.toString().trim().ifEmpty { "pwd" }
+                        // FIX: Estrazione esatta del testo dalla struttura di ML Kit!
+                        val generatedCommand = response.candidates.firstOrNull()?.text?.trim() ?: "pwd"
                         
                         textView.append("\n🤖 Comando generato: $generatedCommand\n\nInvio a Termux in corso...")
                         
