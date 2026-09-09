@@ -43,8 +43,8 @@ jobs:
                 applicationId = "com.agente.gemma"
                 minSdk = 29
                 targetSdk = 34
-                versionCode = 2
-                versionName = "2.0"
+                versionCode = 3
+                versionName = "2.1"
             }
             compileOptions {
                 sourceCompatibility = JavaVersion.VERSION_17
@@ -55,7 +55,7 @@ jobs:
             }
         }
         dependencies { 
-            implementation("com.google.ai.edge.aicore:aicore:1.0.0-alpha01")
+            implementation("com.google.ai.edge.aicore:aicore:0.0.1-exp02")
             implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
             implementation("androidx.core:core-ktx:1.12.0")
         }
@@ -116,7 +116,7 @@ jobs:
                         
                         textView.append("\n🤖 Comando generato: ${response.text}\n\n[Pronto per invio a Termux]")
                     } catch (e: Exception) { 
-                        textView.append("\nErrore di sistema: ${e.message}\n\nATTENZIONE: Assicurati di aver abilitato AICore nelle Opzioni Sviluppatore del tuo Pixel.")
+                        textView.append("\nErrore di sistema: ${e.message}\n\nVerifica che AICore sia attivo sul dispositivo.")
                     }
                 }
             }
