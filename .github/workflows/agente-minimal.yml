@@ -69,7 +69,13 @@ jobs:
                 <package android:name="com.termux" />
             </queries>
             <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
-            <application android:label="Gemini Agent Pro" android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+            
+            <!-- Aggiunto android:largeHeap="true" per permettere il caricamento del modello in RAM -->
+            <application 
+                android:label="Gemini Agent Pro" 
+                android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
+                android:largeHeap="true">
+                
                 <activity android:name=".MainActivity" android:exported="true">
                     <intent-filter>
                         <action android:name="android.intent.action.MAIN" />
