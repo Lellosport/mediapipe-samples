@@ -43,8 +43,8 @@ jobs:
                 applicationId = "com.agente.gemma"
                 minSdk = 31
                 targetSdk = 34
-                versionCode = 23
-                versionName = "9.0"
+                versionCode = 24
+                versionName = "9.1"
             }
             compileOptions {
                 sourceCompatibility = JavaVersion.VERSION_17
@@ -64,13 +64,10 @@ jobs:
         cat << 'EOF' > app/src/main/AndroidManifest.xml
         <?xml version="1.0" encoding="utf-8"?>
         <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-            
             <queries>
                 <package android:name="com.termux" />
             </queries>
-            
             <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
-            
             <application android:label="Gemini Agent" android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
                 <activity android:name=".MainActivity" android:exported="true">
                     <intent-filter>
@@ -107,32 +104,34 @@ jobs:
             private lateinit var logView: TextView
             private lateinit var submitButton: Button
             
-            // La memoria dell'agente
             private var conversationHistory = ""
             private val systemPrompt = """
-                Sei un agente terminale Linux autonomo. 
-                Devi completare l'obiettivo dell'utente analizzando i risultati dei tuoi comandi.
+                Sei un agente terminale Linux autonomo. Procedi un passo alla volta.
                 
-                REGOLE FERREE (Pena il fallimento critico):
-                1. Se devi eseguire un comando, devi rispondere ESATTAMENTE con il prefisso 'CMD: ' seguito dal comando. Il comando DEVE essere scritto su una singola riga, senza andare a capo.
-                2. Se hai completato l'obiettivo, rispondi ESATTAMENTE con il prefisso 'FINE: ' seguito da un messaggio di conferma per l'utente.
-                3. Non usare MAI codice markdown, non aggiungere spiegazioni e usa SOLO uno di questi due formati.
+                REGOLE FERREE:
+                1. FAI UNA SOLA AZIONE ALLA VOLTA. Non inserire mai l'azione e la fine nello stesso messaggio.
+                2. Per agire, rispondi SOLO con il formato: CMD: tuo_comando
+                3. Se l'obiettivo è completato, rispondi SOLO con il formato: FINE: messaggio_di_conferma
+                4. Se vedi che il comando precedente ha fallito, prova un comando o una sintassi diversa, non ripetere mai lo stesso comando guasto all'infinito.
             """.trimIndent() + "\n\n"
         
             private val termuxReceiver = object : BroadcastReceiver() {
                 override fun onReceive(context: Context, intent: Intent) {
                     val bundle = intent.extras ?: return
-                    
                     val exitCode = bundle.getInt("com.termux.RUN_COMMAND_EXIT_CODE")
-                    val out = bundle.getString("com.termux.RUN_COMMAND_STDOUT") ?: ""
-                    val err = bundle.getString("com.termux.RUN_COMMAND_STDERR") ?: ""
+                    val out = bundle.getString("com.termux.RUN_COMMAND_STDOUT")?.trim() ?: ""
+                    val err = bundle.getString("com.termux.RUN_COMMAND_STDERR")?.trim() ?: ""
                     
-                    logView.append("   [Termux Exit: $exitCode]\n")
+                    logView.append("   [Exit Code: $exitCode]\n")
                     
-                    // Aggiungiamo l'esito alla memoria dell'agente
+                    // Protezione contro i loop: limitiamo la cronologia tenendo solo gli ultimi due scambi
+                    val historyLines = conversationHistory.lines()
+                    if (historyLines.size > 20) {
+                        conversationHistory = systemPrompt + historyLines.takeLast(10).joinToString("\n") + "\n"
+                    }
+                    
                     conversationHistory += "RISULTATO ULTIMO COMANDO:\nExit code: $exitCode\nOutput: $out\nErrore: $err\nCosa fai adesso?\n"
                     
-                    // Riattiviamo il ciclo
                     executeAgentLoop()
                 }
             }
@@ -157,12 +156,12 @@ jobs:
                 }
                 
                 logView = TextView(this).apply { 
-                    text = "--- Agente Gemini Autonomo (ReAct) ---\n\n"
+                    text = "--- Agente Gemini Autonomo v2 ---\n\n"
                     textSize = 15f
                 }
                 
                 val inputField = EditText(this).apply {
-                    hint = "Es: Crea la cartella X e mettici due file dentro"
+                    hint = "Es: scrivi i numeri da 1 a 20 nel file x.txt"
                     textSize = 16f
                 }
                 
@@ -185,9 +184,7 @@ jobs:
                     
                     logView.append("\n🎯 OBIETTIVO: $userRequest\n")
                     
-                    // Inizializza la memoria con il nuovo obiettivo
                     conversationHistory = systemPrompt + "Obiettivo dell'utente: $userRequest\nQual è la tua prima azione?\n"
-                    
                     executeAgentLoop()
                 }
             }
@@ -200,14 +197,14 @@ jobs:
                             model.generateContent(conversationHistory)
                         }
                         
-                        // Pulizia aggressiva del comando generato per rimuovere ritorni a capo fatali
-                        val aiResponse = response.candidates.firstOrNull()?.text?.trim()?.replace("\n", " ") ?: ""
+                        val aiRawText = response.candidates.firstOrNull()?.text?.trim() ?: ""
                         
-                        if (aiResponse.startsWith("CMD:")) {
-                            val cmd = aiResponse.removePrefix("CMD:").trim()
-                            logView.append("🤖 Agente lancia: $cmd\n")
+                        // FIX: Estrazione intelligente che scarta la confusione dell'IA
+                        if (aiRawText.contains("CMD:")) {
+                            // Prende la stringa dopo CMD: e si ferma al primo accapo
+                            val cmd = aiRawText.substringAfter("CMD:").split("\n")[0].trim()
+                            logView.append("🤖 Lancia: $cmd\n")
                             
-                            // Aggiunge la propria scelta alla memoria
                             conversationHistory += "TUA AZIONE: Hai lanciato il comando '$cmd'.\n"
                             
                             val resultIntent = Intent("com.agente.gemma.RESULT")
@@ -231,16 +228,16 @@ jobs:
                                 startService(intent)
                             }
                             
-                        } else if (aiResponse.startsWith("FINE:")) {
-                            val msg = aiResponse.removePrefix("FINE:").trim()
-                            logView.append("✅ Obiettivo completato: $msg\n\n")
+                        } else if (aiRawText.contains("FINE:")) {
+                            val msg = aiRawText.substringAfter("FINE:").split("\n")[0].trim()
+                            logView.append("✅ Finito: $msg\n\n")
                             submitButton.isEnabled = true
                         } else {
-                            logView.append("⚠️ L'agente si è confuso e ha risposto fuori formato: $aiResponse\n\n")
+                            logView.append("⚠️ Formato errato: $aiRawText\n\n")
                             submitButton.isEnabled = true
                         }
                     } catch (e: Exception) { 
-                        logView.append("❌ Errore TPU nel loop: ${e.message}\n")
+                        logView.append("❌ Errore TPU: ${e.message}\n")
                         submitButton.isEnabled = true
                     }
                 }
