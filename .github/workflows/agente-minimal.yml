@@ -67,11 +67,18 @@ jobs:
             <queries>
                 <package android:name="com.termux" />
             </queries>
+            
             <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
+            
+            <!-- LA MAGIA È QUI: Sblocca i driver della GPU e della NPU per MediaPipe su Android 12+ -->
+            <uses-native-library android:name="libOpenCL.so" android:required="false" />
+            <uses-native-library android:name="libOpenCL-pixel.so" android:required="false" />
+            
             <application 
                 android:label="Gemini Agent Pro" 
                 android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
                 android:largeHeap="true">
+                
                 <activity android:name=".MainActivity" android:exported="true">
                     <intent-filter>
                         <action android:name="android.intent.action.MAIN" />
