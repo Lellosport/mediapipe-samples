@@ -43,8 +43,8 @@ jobs:
                 applicationId = "com.agente.gemma"
                 minSdk = 31
                 targetSdk = 34
-                versionCode = 36
-                versionName = "15.1-Pro-Clean"
+                versionCode = 37
+                versionName = "15.2-Pro-Completa"
             }
             compileOptions {
                 sourceCompatibility = JavaVersion.VERSION_17
@@ -255,6 +255,7 @@ jobs:
             private var valTopK = 40
             private var valTokens = 1024
             
+            private val PICK_MODEL_FILE = 1000
             private val PICK_TXT_FILE = 1001
             private val scope = CoroutineScope(Dispatchers.Main + Job())
             
@@ -293,7 +294,7 @@ jobs:
                     setPadding(30, 30, 30, 30)
                 }
                 
-                // SLIDER 1: TEMPERATURA (0.0 - 1.0)
+                // SLIDER 1: TEMPERATURA
                 val lblTemp = TextView(this).apply { text = "Temperatura: $valTemp" }
                 val sbTemp = SeekBar(this).apply {
                     max = 100; progress = 70
@@ -303,7 +304,7 @@ jobs:
                     })
                 }
                 
-                // SLIDER 2: TOP-K (1 - 100)
+                // SLIDER 2: TOP-K
                 val lblTopK = TextView(this).apply { text = "Top-K: $valTopK" }
                 val sbTopK = SeekBar(this).apply {
                     max = 99; progress = 39
@@ -313,7 +314,7 @@ jobs:
                     })
                 }
                 
-                // SLIDER 3: MAX TOKENS (128 - 2048)
+                // SLIDER 3: MAX TOKENS
                 val lblTokens = TextView(this).apply { text = "Max Tokens: $valTokens" }
                 val sbTokens = SeekBar(this).apply {
                     max = 1920; progress = 1024 - 128
@@ -323,8 +324,15 @@ jobs:
                     })
                 }
                 
+                val loadModelButton = Button(this).apply {
+                    text = "1. IMPORTA MODELLO (.litertlm)"
+                    setOnClickListener {
+                        startActivityForResult(Intent(Intent.ACTION_GET_CONTENT).apply { type = "*/*" }, PICK_MODEL_FILE)
+                    }
+                }
+                
                 initModelButton = Button(this).apply {
-                    text = "1. INIZIALIZZA NPU"
+                    text = "2. INIZIALIZZA NPU"
                     isEnabled = File(filesDir, "custom_model.litertlm").exists()
                     setOnClickListener {
                         val modelFile = File(filesDir, "custom_model.litertlm")
@@ -340,18 +348,18 @@ jobs:
                                 }
                             }
                         } else {
-                            logView.append("⚠️ Errore: File custom_model.litertlm non trovato.\n")
+                            logView.append("⚠️ Errore: File non trovato. Importalo.\n")
                         }
                     }
                 }
                 
                 val btnPrompt = Button(this).apply {
-                    text = "2. Seleziona Prompt (.txt)"
+                    text = "3. SELEZIONA PROMPT (.txt)"
                     setOnClickListener { startActivityForResult(Intent(Intent.ACTION_GET_CONTENT).apply { type = "text/plain" }, PICK_TXT_FILE) }
                 }
                 
                 submitButton = Button(this).apply {
-                    text = "3. AVVIA AGENTE"
+                    text = "4. AVVIA AGENTE"
                     isEnabled = false
                     setOnClickListener {
                         if (!isModelLoaded || fileContent.isBlank()) return@setOnClickListener
@@ -366,6 +374,7 @@ jobs:
                 layout.addView(lblTopK); layout.addView(sbTopK)
                 layout.addView(lblTokens); layout.addView(sbTokens)
                 
+                layout.addView(loadModelButton)
                 layout.addView(initModelButton)
                 layout.addView(btnPrompt)
                 layout.addView(submitButton)
@@ -376,12 +385,36 @@ jobs:
             
             override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
                 super.onActivityResult(requestCode, resultCode, data)
-                if (resultCode == RESULT_OK && data?.data != null && requestCode == PICK_TXT_FILE) {
-                    try {
-                        fileContent = contentResolver.openInputStream(data.data!!)?.bufferedReader()?.use { it.readText() } ?: ""
-                        logView.append("✅ Prompt caricato!\n")
-                    } catch (e: Exception) {
-                        logView.append("❌ Errore lettura prompt\n")
+                if (resultCode == RESULT_OK && data?.data != null) {
+                    val uri = data.data!!
+                    if (requestCode == PICK_MODEL_FILE) {
+                        logView.append("⏳ COPIA IN CORSO: Non chiudere l'app...\n")
+                        scope.launch(Dispatchers.IO) {
+                            try {
+                                val outFile = File(filesDir, "custom_model.litertlm")
+                                contentResolver.openInputStream(uri)?.use { input ->
+                                    outFile.outputStream().use { output ->
+                                        input.copyTo(output, 8192 * 4) 
+                                    }
+                                }
+                                withContext(Dispatchers.Main) {
+                                    val sizeMb = outFile.length() / (1024 * 1024)
+                                    logView.append("✅ Modello copiato ($sizeMb MB)!\n")
+                                    initModelButton.isEnabled = true
+                                }
+                            } catch (e: Exception) {
+                                withContext(Dispatchers.Main) {
+                                    logView.append("❌ Errore copia: ${e.message}\n")
+                                }
+                            }
+                        }
+                    } else if (requestCode == PICK_TXT_FILE) {
+                        try {
+                            fileContent = contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } ?: ""
+                            logView.append("✅ Prompt caricato!\n")
+                        } catch (e: Exception) {
+                            logView.append("❌ Errore lettura prompt\n")
+                        }
                     }
                 }
             }
