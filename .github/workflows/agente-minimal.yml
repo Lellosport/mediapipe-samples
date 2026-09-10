@@ -61,23 +61,132 @@ jobs:
         }
         EOF
         
-        cat << 'EOF' > app/src/main/AndroidManifest.xml
-        <?xml version="1.0" encoding="utf-8"?>
-        <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-            <queries>
-                <package android:name="com.termux" />
-            </queries>
-            <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
-            <application android:label="Gemini Agent" android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
-                <activity android:name=".MainActivity" android:exported="true">
-                    <intent-filter>
-                        <action android:name="android.intent.action.MAIN" />
-                        <category android:name="android.intent.category.LAUNCHER" />
-                    </intent-filter>
-                </activity>
-            </application>
-        </manifest>
+                cat << 'EOF' > app/src/main/java/com/agente/gemma/GeminiAgentBrain.kt
+        package com.agente.gemma
+        
+        import android.app.PendingIntent
+        import android.content.Context
+        import android.content.Intent
+        import android.os.Build
+        import kotlinx.coroutines.*
+        import com.google.mlkit.genai.prompt.Generation
+        
+        class GeminiAgentBrain(private val context: Context, private val logger: (String) -> Unit, private val onFinish: () -> Unit) {
+            private val scope = CoroutineScope(Dispatchers.IO + Job())
+            private var conversationHistory = ""
+            private var stepCount = 0
+            
+            private val systemPrompt = """
+                Sei un Ingegnere Software Autonomo.
+                DEVI USARE OBBILGATORIAMENTE I DELIMITATORI. Non scrivere codice fuori da questi tag.
+                
+                Per agire su Linux:
+                #INIZIO COMANDO#
+                tuo_comando_qui
+                #FINE COMANDO#
+                
+                Per concludere il lavoro:
+                #INIZIO FINE#
+                completato
+                #FINE FINE#
+                
+                REGOLE MULTIMEDIALI:
+                - Per spostare file (immagini, audio) usa comandi bash standard come mv o cp.
+                - Per VISUALIZZARE un'immagine o RIPRODURRE un audio su Android, usa il comando: termux-open nomefile.ext
+            """.trimIndent() + "\n\n"
+
+            fun startTask(objective: String) {
+                stepCount = 0
+                conversationHistory = systemPrompt + "Obiettivo: $objective\n"
+                logger("🎯 Avvio nuovo task...\n")
+                thinkAndAct()
+            }
+
+            fun processTermuxResult(exitCode: Int, out: String, err: String) {
+                stepCount++
+                if (stepCount >= 7) {
+                    logger("🛑 Limite azioni raggiunto. Forzo lo stop.\n\n")
+                    onFinish()
+                    return
+                }
+                
+                val safeOut = if (out.length > 150) out.take(150) + "..." else out
+                val safeErr = if (err.length > 150) err.take(150) + "..." else err
+                
+                val historyLines = conversationHistory.lines()
+                if (historyLines.size > 20) {
+                    conversationHistory = systemPrompt + historyLines.takeLast(8).joinToString("\n") + "\n"
+                }
+                
+                conversationHistory += "Exit: $exitCode, Out: $safeOut, Err: $safeErr\nCosa fai ora?\n"
+                thinkAndAct()
+            }
+
+            private fun thinkAndAct() {
+                scope.launch {
+                    try {
+                        val model = Generation.getClient()
+                        val response = model.generateContent(conversationHistory)
+                        val aiRawText = response.candidates.firstOrNull()?.text?.trim() ?: ""
+                        
+                        var cmdToRun = ""
+                        var finishMsg = ""
+                        
+                        if (aiRawText.contains("#INIZIO COMANDO#") && aiRawText.contains("#FINE COMANDO#")) {
+                            cmdToRun = aiRawText.substringAfter("#INIZIO COMANDO#").substringBefore("#FINE COMANDO#").trim()
+                        } else if (aiRawText.contains("#INIZIO FINE#") && aiRawText.contains("#FINE FINE#")) {
+                            finishMsg = aiRawText.substringAfter("#INIZIO FINE#").substringBefore("#FINE FINE#").trim()
+                        }
+                        
+                        withContext(Dispatchers.Main) {
+                            // FIX: Blocca l'esecuzione se il comando estratto è vuoto
+                            if (cmdToRun.isNotBlank()) {
+                                logger("🤖 Eseguo:\n$cmdToRun\n")
+                                conversationHistory += "Hai inviato un comando.\n"
+                                sendToTermux(cmdToRun)
+                            } else if (finishMsg.isNotBlank()) {
+                                logger("✅ Finito: $finishMsg\n\n")
+                                onFinish()
+                            } else {
+                                logger("⚠️ Errore sintassi IA, riallineamento in corso...\n")
+                                conversationHistory += "ERRORE: Sintassi non trovata o vuota. Usa #INIZIO COMANDO# o #INIZIO FINE#.\n"
+                                thinkAndAct()
+                            }
+                        }
+                    } catch (e: Exception) {
+                        withContext(Dispatchers.Main) {
+                            logger("❌ Errore TPU: ${e.message}\n")
+                            onFinish()
+                        }
+                    }
+                }
+            }
+
+            private fun sendToTermux(cmd: String) {
+                val resultIntent = Intent("com.agente.gemma.RESULT")
+                resultIntent.setPackage(context.packageName)
+                val pendingIntent = PendingIntent.getBroadcast(
+                    context, 0, resultIntent, 
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
+                )
+                
+                val intent = Intent("com.termux.RUN_COMMAND")
+                intent.setClassName("com.termux", "com.termux.app.RunCommandService")
+                intent.putExtra("com.termux.RUN_COMMAND_PATH", "/data/data/com.termux/files/usr/bin/sh")
+                intent.putExtra("com.termux.RUN_COMMAND_ARGUMENTS", arrayOf("-c", cmd))
+                intent.putExtra("com.termux.RUN_COMMAND_WORKDIR", "/data/data/com.termux/files/home")
+                intent.putExtra("com.termux.RUN_COMMAND_BACKGROUND", true)
+                intent.putExtra("com.termux.RUN_COMMAND_PENDING_INTENT", pendingIntent)
+                
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+            }
+        }
         EOF
+
         
         # FILE 1: Il Cervello dell'IA (Logica e Termux)
         cat << 'EOF' > app/src/main/java/com/agente/gemma/GeminiAgentBrain.kt
