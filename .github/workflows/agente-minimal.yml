@@ -43,8 +43,8 @@ jobs:
                 applicationId = "com.agente.gemma"
                 minSdk = 31
                 targetSdk = 34
-                versionCode = 31
-                versionName = "13.0"
+                versionCode = 32
+                versionName = "13.1"
             }
             compileOptions {
                 sourceCompatibility = JavaVersion.VERSION_17
@@ -79,7 +79,7 @@ jobs:
         </manifest>
         EOF
         
-        # FILE 1: Il Cervello (ora accetta la Temperatura e usa GenerativeConfig)
+        # FILE 1: Il Cervello (Configurazione fixata per la Beta di ML Kit)
         cat << 'EOF' > app/src/main/java/com/agente/gemma/GeminiAgentBrain.kt
         package com.agente.gemma
         
@@ -89,15 +89,12 @@ jobs:
         import android.os.Build
         import kotlinx.coroutines.*
         import com.google.mlkit.genai.prompt.Generation
-        import com.google.mlkit.genai.prompt.GenerationConfig
         
         class GeminiAgentBrain(private val context: Context, private val logger: (String) -> Unit, private val onFinish: () -> Unit) {
             private val scope = CoroutineScope(Dispatchers.IO + Job())
             private var conversationHistory = ""
             private var stepCount = 0
-            private var currentTemperature = 0.7f
             
-            // Ho aggiunto un'istruzione rigida per costringerlo a scrivere MOLTO codice
             private val systemPrompt = """
                 Sei un Ingegnere Software Autonomo di livello Senior.
                 DEVI USARE OBBILGATORIAMENTE I DELIMITATORI. Non scrivere codice fuori da questi tag.
@@ -124,9 +121,10 @@ jobs:
 
             fun startTask(objective: String, temperature: Float) {
                 stepCount = 0
-                currentTemperature = temperature
+                // La temperatura è ignorata in questa versione Beta locale, 
+                // ma il prompt rigoroso imporrà comunque creatività.
                 conversationHistory = systemPrompt + "Obiettivo: $objective\n"
-                logger("🎯 Avvio task (Temperatura IA: $currentTemperature)...\n")
+                logger("🎯 Avvio task (Modalità IA Locale)...\n")
                 thinkAndAct()
             }
 
@@ -153,12 +151,8 @@ jobs:
             private fun thinkAndAct() {
                 scope.launch {
                     try {
-                        // Iniezione della Temperatura nel modello TPU!
-                        val config = GenerationConfig.Builder()
-                            .setTemperature(currentTemperature)
-                            .build()
-                            
-                        val model = Generation.getClient(config)
+                        // Utilizziamo il client base supportato dalla Beta
+                        val model = Generation.getClient()
                         val response = model.generateContent(conversationHistory)
                         val aiRawText = response.candidates.firstOrNull()?.text?.trim() ?: ""
                         
@@ -219,7 +213,7 @@ jobs:
         }
         EOF
         
-        # FILE 2: La UI (Con file picker e slider temperatura)
+        # FILE 2: La UI (Con file picker e slider mantenuti)
         cat << 'EOF' > app/src/main/java/com/agente/gemma/MainActivity.kt
         package com.agente.gemma
         
@@ -287,21 +281,8 @@ jobs:
                 }
                 
                 val tempLabel = TextView(this).apply {
-                    text = "Temperatura / Creatività: 0.7\n(Bassa = Breve/Preciso | Alta = Lungo/Creativo)"
+                    text = "L'IA Cloud usa la Temperatura. L'IA Locale (Nano) è forzata alla massima precisione dal sistema."
                     setPadding(0, 0, 0, 10)
-                }
-                
-                val tempSlider = SeekBar(this).apply {
-                    max = 100
-                    progress = 70
-                    setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                        override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                            currentTemperature = progress / 100f
-                            tempLabel.text = "Temperatura / Creatività: $currentTemperature\n(Bassa = Breve/Preciso | Alta = Lungo/Creativo)"
-                        }
-                        override fun onStartTrackingTouch(seekBar: SeekBar?) {}
-                        override fun onStopTrackingTouch(seekBar: SeekBar?) {}
-                    })
                 }
                 
                 fileLabel = TextView(this).apply {
@@ -313,7 +294,7 @@ jobs:
                     text = "Seleziona File .txt (Il tuo Prompt)"
                     setOnClickListener {
                         val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
-                            type = "text/plain" // Filtra solo file di testo
+                            type = "text/plain"
                             addCategory(Intent.CATEGORY_OPENABLE)
                         }
                         startActivityForResult(intent, PICK_TXT_FILE)
@@ -339,7 +320,6 @@ jobs:
                 }
                 
                 layout.addView(tempLabel)
-                layout.addView(tempSlider)
                 layout.addView(selectFileButton)
                 layout.addView(fileLabel)
                 layout.addView(submitButton)
