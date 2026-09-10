@@ -116,7 +116,7 @@ jobs:
                 #FINE FINE#
             """.trimIndent() + "\n\n"
 
-            fun loadModel(modelPath: String, temp: Float, topK: Int, maxTokens: Int) {
+                        fun loadModel(modelPath: String, temp: Float, topK: Int, maxTokens: Int) {
                 logger("⏳ Avvio motore LiteRT...\n")
                 logger("⚙️ Parametri: Temp=$temp | TopK=$topK | Tokens=$maxTokens\n")
                 try {
@@ -125,6 +125,8 @@ jobs:
                         .setTemperature(temp)
                         .setTopK(topK)
                         .setMaxTokens(maxTokens)
+                        // IL SEGRETO È QUI: Diciamo al motore di usare l'hardware dedicato!
+                        .setDelegate(LlmInference.Delegate.GPU) 
                         .build()
                     
                     llmInference?.close()
@@ -134,6 +136,7 @@ jobs:
                     logger("❌ Errore caricamento Kotlin: ${e.message}\n")
                 }
             }
+
 
             fun startTask(objective: String) {
                 if (llmInference == null) return
