@@ -334,6 +334,240 @@ jobs:
                     setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                         override fun onProgressChanged(s: SeekBar?, p: Int, f: Boolean) { valTokens = p+128; lblTokens.text = "Max Tokens: $valTokens" }
                         override fun onStartTrackingTouch(s: SeekBar?) {} override fun onStopTrackingTouch(s: SeekBar?) {}
+        # FILE 1: Il Cervello (Rimosso Top-P non supportato dall'SDK)
+        cat << 'EOF' > app/src/main/java/com/agente/gemma/GeminiAgentBrain.kt
+        package com.agente.gemma
+        
+        import android.app.PendingIntent
+        import android.content.Context
+        import android.content.Intent
+        import android.os.Build
+        import kotlinx.coroutines.*
+        import com.google.mediapipe.tasks.genai.llminference.LlmInference
+        
+        class GeminiAgentBrain(private val context: Context, private val logger: (String) -> Unit, private val onFinish: () -> Unit) {
+            private val scope = CoroutineScope(Dispatchers.IO + Job())
+            private var conversationHistory = ""
+            private var stepCount = 0
+            private var llmInference: LlmInference? = null
+            
+            private val systemPrompt = """
+                Sei un Ingegnere Software Autonomo.
+                USA I DELIMITATORI. Non scrivere fuori dai tag.
+                #INIZIO COMANDO#
+                comando_qui
+                #FINE COMANDO#
+                
+                #INIZIO FINE#
+                completato
+                #FINE FINE#
+            """.trimIndent() + "\n\n"
+
+            fun loadModel(modelPath: String, temp: Float, topK: Int, maxTokens: Int) {
+                logger("⏳ Avvio motore LiteRT...\n")
+                logger("⚙️ Parametri: Temp=$temp | TopK=$topK | Tokens=$maxTokens\n")
+                try {
+                    val options = LlmInference.LlmInferenceOptions.builder()
+                        .setModelPath(modelPath)
+                        .setTemperature(temp)
+                        .setTopK(topK)
+                        .setMaxTokens(maxTokens)
+                        .build()
+                    
+                    llmInference?.close()
+                    llmInference = LlmInference.createFromOptions(context, options)
+                    logger("✅ Motore NPU inizializzato con successo!\n\n")
+                } catch (e: Exception) {
+                    logger("❌ Errore caricamento Kotlin: ${e.message}\n")
+                }
+            }
+
+            fun startTask(objective: String) {
+                if (llmInference == null) return
+                stepCount = 0
+                conversationHistory = systemPrompt + "Obiettivo: $objective\n"
+                logger("🎯 Avvio task autonomo...\n")
+                thinkAndAct()
+            }
+
+            fun processTermuxResult(exitCode: Int, out: String, err: String) {
+                stepCount++
+                if (stepCount >= 7) {
+                    logger("🛑 Limite azioni raggiunto.\n\n")
+                    onFinish()
+                    return
+                }
+                
+                val safeOut = if (out.length > 150) out.take(150) + "..." else out
+                val safeErr = if (err.length > 150) err.take(150) + "..." else err
+                
+                val historyLines = conversationHistory.lines()
+                if (historyLines.size > 20) {
+                    conversationHistory = systemPrompt + historyLines.takeLast(8).joinToString("\n") + "\n"
+                }
+                
+                conversationHistory += "Exit: $exitCode, Out: $safeOut, Err: $safeErr\nProssima mossa?\n"
+                thinkAndAct()
+            }
+
+            private fun thinkAndAct() {
+                scope.launch {
+                    try {
+                        val aiRawText = llmInference?.generateResponse(conversationHistory)?.trim() ?: ""
+                        var cmdToRun = ""
+                        var finishMsg = ""
+                        
+                        if (aiRawText.contains("#INIZIO COMANDO#") && aiRawText.contains("#FINE COMANDO#")) {
+                            cmdToRun = aiRawText.substringAfter("#INIZIO COMANDO#").substringBefore("#FINE COMANDO#").trim()
+                        } else if (aiRawText.contains("#INIZIO FINE#") && aiRawText.contains("#FINE FINE#")) {
+                            finishMsg = aiRawText.substringAfter("#INIZIO FINE#").substringBefore("#FINE FINE#").trim()
+                        }
+                        
+                        withContext(Dispatchers.Main) {
+                            if (cmdToRun.isNotBlank()) {
+                                logger("🤖 Eseguo:\n$cmdToRun\n")
+                                conversationHistory += "Hai inviato un comando.\n"
+                                sendToTermux(cmdToRun)
+                            } else if (finishMsg.isNotBlank()) {
+                                logger("✅ Finito: $finishMsg\n\n")
+                                onFinish()
+                            } else {
+                                logger("⚠️ Errore sintassi IA...\n")
+                                conversationHistory += "ERRORE: Usa i tag.\n"
+                                thinkAndAct()
+                            }
+                        }
+                    } catch (e: Exception) {
+                        withContext(Dispatchers.Main) {
+                            logger("❌ Errore TPU/NPU: ${e.message}\n")
+                            onFinish()
+                        }
+                    }
+                }
+            }
+
+            private fun sendToTermux(cmd: String) {
+                val resultIntent = Intent("com.agente.gemma.RESULT")
+                resultIntent.setPackage(context.packageName)
+                val pendingIntent = PendingIntent.getBroadcast(context, 0, resultIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE)
+                
+                val intent = Intent("com.termux.RUN_COMMAND")
+                intent.setClassName("com.termux", "com.termux.app.RunCommandService")
+                intent.putExtra("com.termux.RUN_COMMAND_PATH", "/data/data/com.termux/files/usr/bin/sh")
+                intent.putExtra("com.termux.RUN_COMMAND_ARGUMENTS", arrayOf("-c", cmd))
+                intent.putExtra("com.termux.RUN_COMMAND_WORKDIR", "/data/data/com.termux/files/home")
+                intent.putExtra("com.termux.RUN_COMMAND_BACKGROUND", true)
+                intent.putExtra("com.termux.RUN_COMMAND_PENDING_INTENT", pendingIntent)
+                
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+            }
+        }
+        EOF
+        
+        # FILE 2: La UI (Rimosso lo slider Top-P)
+        cat << 'EOF' > app/src/main/java/com/agente/gemma/MainActivity.kt
+        package com.agente.gemma
+        
+        import android.app.Activity
+        import android.content.BroadcastReceiver
+        import android.content.Context
+        import android.content.Intent
+        import android.content.IntentFilter
+        import android.content.pm.PackageManager
+        import android.os.Build
+        import android.os.Bundle
+        import android.view.WindowManager
+        import android.widget.Button
+        import android.widget.LinearLayout
+        import android.widget.ScrollView
+        import android.widget.SeekBar
+        import android.widget.TextView
+        import kotlinx.coroutines.*
+        import java.io.File
+        
+        class MainActivity : Activity() {
+            private lateinit var logView: TextView
+            private lateinit var submitButton: Button
+            private lateinit var initModelButton: Button
+            private lateinit var agentBrain: GeminiAgentBrain
+            
+            private var fileContent: String = ""
+            private var isModelLoaded = false
+            
+            // Valori di default
+            private var valTemp = 0.7f
+            private var valTopK = 40
+            private var valTokens = 1024
+            
+            private val PICK_TXT_FILE = 1001
+            private val scope = CoroutineScope(Dispatchers.Main + Job())
+            
+            private val termuxReceiver = object : BroadcastReceiver() {
+                override fun onReceive(context: Context, intent: Intent) {
+                    val bundle = intent.extras ?: return
+                    val exitCode = bundle.getInt("com.termux.RUN_COMMAND_EXIT_CODE")
+                    val out = bundle.getString("com.termux.RUN_COMMAND_STDOUT")?.trim() ?: ""
+                    val err = bundle.getString("com.termux.RUN_COMMAND_STDERR")?.trim() ?: ""
+                    agentBrain.processTermuxResult(exitCode, out, err)
+                }
+            }
+        
+            override fun onCreate(savedInstanceState: Bundle?) {
+                super.onCreate(savedInstanceState)
+                window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                
+                agentBrain = GeminiAgentBrain(
+                    context = this,
+                    logger = { msg -> logView.append(msg) },
+                    onFinish = { submitButton.isEnabled = true }
+                )
+                
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    registerReceiver(termuxReceiver, IntentFilter("com.agente.gemma.RESULT"), Context.RECEIVER_EXPORTED)
+                } else {
+                    registerReceiver(termuxReceiver, IntentFilter("com.agente.gemma.RESULT"))
+                }
+                
+                if (checkSelfPermission("com.termux.permission.RUN_COMMAND") != PackageManager.PERMISSION_GRANTED) {
+                    requestPermissions(arrayOf("com.termux.permission.RUN_COMMAND"), 1)
+                }
+                
+                val layout = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(30, 30, 30, 30)
+                }
+                
+                // SLIDER 1: TEMPERATURA (0.0 - 1.0)
+                val lblTemp = TextView(this).apply { text = "Temperatura: $valTemp" }
+                val sbTemp = SeekBar(this).apply {
+                    max = 100; progress = 70
+                    setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                        override fun onProgressChanged(s: SeekBar?, p: Int, f: Boolean) { valTemp = p/100f; lblTemp.text = "Temperatura: $valTemp" }
+                        override fun onStartTrackingTouch(s: SeekBar?) {} override fun onStopTrackingTouch(s: SeekBar?) {}
+                    })
+                }
+                
+                // SLIDER 2: TOP-K (1 - 100)
+                val lblTopK = TextView(this).apply { text = "Top-K: $valTopK" }
+                val sbTopK = SeekBar(this).apply {
+                    max = 99; progress = 39
+                    setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                        override fun onProgressChanged(s: SeekBar?, p: Int, f: Boolean) { valTopK = p+1; lblTopK.text = "Top-K: $valTopK" }
+                        override fun onStartTrackingTouch(s: SeekBar?) {} override fun onStopTrackingTouch(s: SeekBar?) {}
+                    })
+                }
+                
+                // SLIDER 3: MAX TOKENS (128 - 2048)
+                val lblTokens = TextView(this).apply { text = "Max Tokens: $valTokens" }
+                val sbTokens = SeekBar(this).apply {
+                    max = 1920; progress = 1024 - 128
+                    setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                        override fun onProgressChanged(s: SeekBar?, p: Int, f: Boolean) { valTokens = p+128; lblTokens.text = "Max Tokens: $valTokens" }
+                        override fun onStartTrackingTouch(s: SeekBar?) {} override fun onStopTrackingTouch(s: SeekBar?) {}
                     })
                 }
                 
@@ -346,7 +580,7 @@ jobs:
                             logView.append("Avvio con Tokens=$valTokens...\n")
                             initModelButton.isEnabled = false
                             scope.launch(Dispatchers.IO) {
-                                agentBrain.loadModel(modelFile.absolutePath, valTemp, valTopK, valTopP, valTokens)
+                                agentBrain.loadModel(modelFile.absolutePath, valTemp, valTopK, valTokens)
                                 isModelLoaded = true
                                 withContext(Dispatchers.Main) { 
                                     initModelButton.isEnabled = true
@@ -378,7 +612,6 @@ jobs:
                 
                 layout.addView(lblTemp); layout.addView(sbTemp)
                 layout.addView(lblTopK); layout.addView(sbTopK)
-                layout.addView(lblTopP); layout.addView(sbTopP)
                 layout.addView(lblTokens); layout.addView(sbTokens)
                 
                 layout.addView(initModelButton)
@@ -422,4 +655,4 @@ jobs:
       with:
         name: Agente-LiteRT-Termux
         path: app/build/outputs/apk/debug/app-debug.apk
-        
+
