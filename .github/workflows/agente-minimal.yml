@@ -43,8 +43,8 @@ jobs:
                 applicationId = "com.agente.gemma"
                 minSdk = 31
                 targetSdk = 34
-                versionCode = 28
-                versionName = "10.0"
+                versionCode = 29
+                versionName = "11.0"
             }
             compileOptions {
                 sourceCompatibility = JavaVersion.VERSION_17
@@ -79,11 +79,133 @@ jobs:
         </manifest>
         EOF
         
+        # FILE 1: Il Cervello dell'IA (Logica e Termux)
+        cat << 'EOF' > app/src/main/java/com/agente/gemma/GeminiAgentBrain.kt
+        package com.agente.gemma
+        
+        import android.app.PendingIntent
+        import android.content.Context
+        import android.content.Intent
+        import android.os.Build
+        import kotlinx.coroutines.*
+        import com.google.mlkit.genai.prompt.Generation
+        
+        class GeminiAgentBrain(private val context: Context, private val logger: (String) -> Unit, private val onFinish: () -> Unit) {
+            private val scope = CoroutineScope(Dispatchers.IO + Job())
+            private var conversationHistory = ""
+            private var stepCount = 0
+            
+            private val systemPrompt = """
+                Sei un Ingegnere Software Autonomo.
+                DEVI USARE OBBILGATORIAMENTE I DELIMITATORI. Non scrivere codice fuori da questi tag.
+                
+                Per agire su Linux:
+                #INIZIO COMANDO#
+                tuo_comando_qui
+                #FINE COMANDO#
+                
+                Per concludere il lavoro:
+                #INIZIO FINE#
+                completato
+                #FINE FINE#
+            """.trimIndent() + "\n\n"
+
+            fun startTask(objective: String) {
+                stepCount = 0
+                conversationHistory = systemPrompt + "Obiettivo: $objective\n"
+                logger("🎯 Avvio nuovo task...\n")
+                thinkAndAct()
+            }
+
+            fun processTermuxResult(exitCode: Int, out: String, err: String) {
+                stepCount++
+                if (stepCount >= 7) {
+                    logger("🛑 Limite azioni raggiunto. Forzo lo stop.\n\n")
+                    onFinish()
+                    return
+                }
+                
+                val safeOut = if (out.length > 150) out.take(150) + "..." else out
+                val safeErr = if (err.length > 150) err.take(150) + "..." else err
+                
+                val historyLines = conversationHistory.lines()
+                if (historyLines.size > 20) {
+                    conversationHistory = systemPrompt + historyLines.takeLast(8).joinToString("\n") + "\n"
+                }
+                
+                conversationHistory += "Exit: $exitCode, Out: $safeOut, Err: $safeErr\nCosa fai ora?\n"
+                thinkAndAct()
+            }
+
+            private fun thinkAndAct() {
+                scope.launch {
+                    try {
+                        val model = Generation.getClient()
+                        val response = model.generateContent(conversationHistory)
+                        val aiRawText = response.candidates.firstOrNull()?.text?.trim() ?: ""
+                        
+                        var cmdToRun = ""
+                        var finishMsg = ""
+                        
+                        if (aiRawText.contains("#INIZIO COMANDO#") && aiRawText.contains("#FINE COMANDO#")) {
+                            cmdToRun = aiRawText.substringAfter("#INIZIO COMANDO#").substringBefore("#FINE COMANDO#").trim()
+                        } else if (aiRawText.contains("#INIZIO FINE#") && aiRawText.contains("#FINE FINE#")) {
+                            finishMsg = aiRawText.substringAfter("#INIZIO FINE#").substringBefore("#FINE FINE#").trim()
+                        }
+                        
+                        withContext(Dispatchers.Main) {
+                            if (cmdToRun.isNotEmpty()) {
+                                logger("🤖 Eseguo:\n$cmdToRun\n")
+                                conversationHistory += "Hai inviato un comando.\n"
+                                sendToTermux(cmdToRun)
+                            } else if (finishMsg.isNotEmpty()) {
+                                logger("✅ Finito: $finishMsg\n\n")
+                                onFinish()
+                            } else {
+                                logger("⚠️ Errore sintassi IA, forzatura in corso...\n")
+                                conversationHistory += "ERRORE: Usa #INIZIO COMANDO# o #INIZIO FINE#.\n"
+                                thinkAndAct()
+                            }
+                        }
+                    } catch (e: Exception) {
+                        withContext(Dispatchers.Main) {
+                            logger("❌ Errore TPU: ${e.message}\n")
+                            onFinish()
+                        }
+                    }
+                }
+            }
+
+            private fun sendToTermux(cmd: String) {
+                val resultIntent = Intent("com.agente.gemma.RESULT")
+                resultIntent.setPackage(context.packageName)
+                val pendingIntent = PendingIntent.getBroadcast(
+                    context, 0, resultIntent, 
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
+                )
+                
+                val intent = Intent("com.termux.RUN_COMMAND")
+                intent.setClassName("com.termux", "com.termux.app.RunCommandService")
+                intent.putExtra("com.termux.RUN_COMMAND_PATH", "/data/data/com.termux/files/usr/bin/sh")
+                intent.putExtra("com.termux.RUN_COMMAND_ARGUMENTS", arrayOf("-c", cmd))
+                intent.putExtra("com.termux.RUN_COMMAND_WORKDIR", "/data/data/com.termux/files/home")
+                intent.putExtra("com.termux.RUN_COMMAND_BACKGROUND", true)
+                intent.putExtra("com.termux.RUN_COMMAND_PENDING_INTENT", pendingIntent)
+                
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+            }
+        }
+        EOF
+
+        # FILE 2: L'Interfaccia Utente (Gestione e Avvio)
         cat << 'EOF' > app/src/main/java/com/agente/gemma/MainActivity.kt
         package com.agente.gemma
         
         import android.app.Activity
-        import android.app.PendingIntent
         import android.content.BroadcastReceiver
         import android.content.Context
         import android.content.Intent
@@ -97,75 +219,33 @@ jobs:
         import android.widget.LinearLayout
         import android.widget.ScrollView
         import android.widget.TextView
-        import kotlinx.coroutines.*
-        import com.google.mlkit.genai.prompt.Generation
         
         class MainActivity : Activity() {
-            private val scope = CoroutineScope(Dispatchers.Main + Job())
             private lateinit var logView: TextView
             private lateinit var submitButton: Button
+            private lateinit var agentBrain: GeminiAgentBrain
             
-            private var conversationHistory = ""
-            private var stepCount = 0
-            
-            private val systemPrompt = """
-                Sei un Ingegnere Software Autonomo. Hai accesso a un terminale Linux.
-                Devi completare l'obiettivo verificando costantemente il tuo lavoro.
-                
-                REGOLE DI COMUNICAZIONE (OBBLIGATORIE):
-                Per eseguire un comando DEVI usare questi esatti delimitatori. Tutto ciò che è all'interno verrà eseguito dal terminale:
-                #INIZIO COMANDO#
-                tuo_comando_qui
-                #FINE COMANDO#
-                
-                Per dichiarare il task concluso, usa:
-                #INIZIO FINE#
-                Il tuo messaggio per l'utente
-                #FINE FINE#
-                
-                REGOLE DI SVILUPPO (ARTEFATTI):
-                1. Se devi creare o modificare script complessi, fai tutto in un unico comando combinato o usa heredoc (cat << 'EOF' > file.txt).
-                2. Non verificare lo stesso file all'infinito.
-            """.trimIndent() + "\n\n"
-        
             private val termuxReceiver = object : BroadcastReceiver() {
                 override fun onReceive(context: Context, intent: Intent) {
                     val bundle = intent.extras ?: return
                     val exitCode = bundle.getInt("com.termux.RUN_COMMAND_EXIT_CODE")
-                    var out = bundle.getString("com.termux.RUN_COMMAND_STDOUT")?.trim() ?: ""
-                    var err = bundle.getString("com.termux.RUN_COMMAND_STDERR")?.trim() ?: ""
-                    
-                    if (out.length > 150) out = out.take(150) + "..."
-                    if (err.length > 150) err = err.take(150) + "..."
+                    val out = bundle.getString("com.termux.RUN_COMMAND_STDOUT")?.trim() ?: ""
+                    val err = bundle.getString("com.termux.RUN_COMMAND_STDERR")?.trim() ?: ""
                     
                     logView.append("   [Exit Code: $exitCode]\n")
-                    
-                    stepCount++
-                    if (stepCount >= 7) {
-                        logView.append("🛑 Raggiunto limite azioni per questo task.\n\n")
-                        submitButton.isEnabled = true
-                        return
-                    }
-                    
-                    val historyLines = conversationHistory.lines()
-                    if (historyLines.size > 20) {
-                        conversationHistory = systemPrompt + historyLines.takeLast(8).joinToString("\n") + "\n"
-                    }
-                    
-                    val contextHint = if (exitCode == 0) {
-                        "SUCCESSO. Se hai fatto tutto, usa #INIZIO FINE#."
-                    } else {
-                        "ERRORE. Correggi e usa di nuovo #INIZIO COMANDO#."
-                    }
-                    
-                    conversationHistory += "Termux ha risposto:\nExit: $exitCode\nOut: $out\nErr: $err\n$contextHint\n"
-                    executeAgentLoop()
+                    agentBrain.processTermuxResult(exitCode, out, err)
                 }
             }
         
             override fun onCreate(savedInstanceState: Bundle?) {
                 super.onCreate(savedInstanceState)
                 window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                
+                agentBrain = GeminiAgentBrain(
+                    context = this,
+                    logger = { msg -> logView.append(msg) },
+                    onFinish = { submitButton.isEnabled = true }
+                )
                 
                 val filter = IntentFilter("com.agente.gemma.RESULT")
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -184,17 +264,17 @@ jobs:
                 }
                 
                 logView = TextView(this).apply { 
-                    text = "--- Agente Gemini Nano v6 (Syntax) ---\n\n"
+                    text = "--- Architettura Multi-File Pronta ---\n\n"
                     textSize = 15f
                 }
                 
                 val inputField = EditText(this).apply {
-                    hint = "Es: Crea uno script python che stampa 'Ciao' e avvialo"
+                    hint = "Assegna un obiettivo..."
                     textSize = 16f
                 }
                 
                 submitButton = Button(this).apply {
-                    text = "Assegna Obiettivo"
+                    text = "Avvia Agente"
                 }
                 
                 layout.addView(inputField)
@@ -208,79 +288,14 @@ jobs:
                     if (userRequest.isBlank()) return@setOnClickListener
                     
                     submitButton.isEnabled = false
-                    stepCount = 0
-                    
-                    logView.append("\n🎯 OBIETTIVO: $userRequest\n")
-                    
-                    conversationHistory = systemPrompt + "Obiettivo: $userRequest\nInizia:\n"
-                    executeAgentLoop()
-                }
-            }
-            
-            private fun executeAgentLoop() {
-                scope.launch {
-                    try {
-                        val model = Generation.getClient()
-                        val response = withContext(Dispatchers.IO) {
-                            model.generateContent(conversationHistory)
-                        }
-                        
-                        val aiRawText = response.candidates.firstOrNull()?.text?.trim() ?: ""
-                        
-                        // Parser robusto con la nuova sintassi
-                        var cmdToRun = ""
-                        var finishMsg = ""
-                        
-                        if (aiRawText.contains("#INIZIO COMANDO#") && aiRawText.contains("#FINE COMANDO#")) {
-                            cmdToRun = aiRawText.substringAfter("#INIZIO COMANDO#").substringBefore("#FINE COMANDO#").trim()
-                        } else if (aiRawText.contains("#INIZIO FINE#") && aiRawText.contains("#FINE FINE#")) {
-                            finishMsg = aiRawText.substringAfter("#INIZIO FINE#").substringBefore("#FINE FINE#").trim()
-                        }
-                        
-                        if (cmdToRun.isNotEmpty()) {
-                            logView.append("🤖 Lancia:\n$cmdToRun\n")
-                            conversationHistory += "Hai usato:\n#INIZIO COMANDO#\n$cmdToRun\n#FINE COMANDO#\n"
-                            
-                            val resultIntent = Intent("com.agente.gemma.RESULT")
-                            resultIntent.setPackage(packageName)
-                            val pendingIntent = PendingIntent.getBroadcast(
-                                this@MainActivity, 0, resultIntent, 
-                                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
-                            )
-                            
-                            val intent = Intent("com.termux.RUN_COMMAND")
-                            intent.setClassName("com.termux", "com.termux.app.RunCommandService")
-                            intent.putExtra("com.termux.RUN_COMMAND_PATH", "/data/data/com.termux/files/usr/bin/sh")
-                            intent.putExtra("com.termux.RUN_COMMAND_ARGUMENTS", arrayOf("-c", cmdToRun))
-                            intent.putExtra("com.termux.RUN_COMMAND_WORKDIR", "/data/data/com.termux/files/home")
-                            intent.putExtra("com.termux.RUN_COMMAND_BACKGROUND", true)
-                            intent.putExtra("com.termux.RUN_COMMAND_PENDING_INTENT", pendingIntent)
-                            
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                                startForegroundService(intent)
-                            } else {
-                                startService(intent)
-                            }
-                            
-                        } else if (finishMsg.isNotEmpty()) {
-                            logView.append("✅ Finito: $finishMsg\n\n")
-                            submitButton.isEnabled = true
-                        } else {
-                            logView.append("⚠️ Sintassi mancante, richiedo formattazione...\n")
-                            conversationHistory += "Usa OBBILGATORIAMENTE i delimitatori #INIZIO COMANDO# e #FINE COMANDO#.\n"
-                            executeAgentLoop()
-                        }
-                    } catch (e: Exception) { 
-                        logView.append("❌ Errore TPU: ${e.message}\n")
-                        submitButton.isEnabled = true
-                    }
+                    inputField.text.clear()
+                    agentBrain.startTask(userRequest)
                 }
             }
             
             override fun onDestroy() {
                 super.onDestroy()
                 unregisterReceiver(termuxReceiver)
-                scope.cancel()
             }
         }
         EOF
