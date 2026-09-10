@@ -43,8 +43,8 @@ jobs:
                 applicationId = "com.agente.gemma"
                 minSdk = 31
                 targetSdk = 34
-                versionCode = 25
-                versionName = "9.2"
+                versionCode = 26
+                versionName = "9.3"
             }
             compileOptions {
                 sourceCompatibility = JavaVersion.VERSION_17
@@ -91,6 +91,7 @@ jobs:
         import android.content.pm.PackageManager
         import android.os.Build
         import android.os.Bundle
+        import android.view.WindowManager
         import android.widget.Button
         import android.widget.EditText
         import android.widget.LinearLayout
@@ -111,10 +112,10 @@ jobs:
                 REGOLA 1: Se devi agire, rispondi SOLO con una riga che inizia per:
                 CMD: <tuo_comando>
                 
-                REGOLA 2: Se il task è finito, rispondi SOLO con una riga che inizia per:
+                REGOLA 2: Appena il comando ha successo, NON verificare il risultato. Rispondi SUBITO con:
                 FINE: completato
                 
-                NON scrivere altro. Non spiegare nulla.
+                NON scrivere altro.
             """.trimIndent() + "\n\n"
         
             private val termuxReceiver = object : BroadcastReceiver() {
@@ -129,13 +130,12 @@ jobs:
                     
                     logView.append("   [Exit Code: $exitCode]\n")
                     
-                    // Pulizia ciclica aggressiva per evitare overload cognitivo
                     val historyLines = conversationHistory.lines()
                     if (historyLines.size > 15) {
                         conversationHistory = systemPrompt + historyLines.takeLast(6).joinToString("\n") + "\n"
                     }
                     
-                    conversationHistory += "Termux ha risposto al tuo comando. Code: $exitCode, Out: $out, Err: $err.\nProssima mossa?\n"
+                    conversationHistory += "Risposta Termux. Code: $exitCode, Out: $out, Err: $err.\nProssima mossa?\n"
                     
                     executeAgentLoop()
                 }
@@ -143,6 +143,9 @@ jobs:
         
             override fun onCreate(savedInstanceState: Bundle?) {
                 super.onCreate(savedInstanceState)
+                
+                // Forza lo schermo a rimanere acceso per evitare l'ErrorCode 30
+                window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
                 
                 val filter = IntentFilter("com.agente.gemma.RESULT")
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -161,7 +164,7 @@ jobs:
                 }
                 
                 logView = TextView(this).apply { 
-                    text = "--- Agente Gemini Autonomo v3 ---\n\n"
+                    text = "--- Agente Gemini Autonomo v4 ---\n\n"
                     textSize = 15f
                 }
                 
@@ -204,7 +207,6 @@ jobs:
                         
                         val aiRawText = response.candidates.firstOrNull()?.text?.trim() ?: ""
                         
-                        // Scanner di estrazione chirurgica: cerca linea per linea ignorando il rumore
                         var cmdToRun = ""
                         var finishMsg = ""
                         
@@ -212,10 +214,10 @@ jobs:
                             val cleanLine = line.trim()
                             if (cleanLine.startsWith("CMD:")) {
                                 cmdToRun = cleanLine.removePrefix("CMD:").trim()
-                                break // Trovato comando, ignora il resto
+                                break
                             } else if (cleanLine.startsWith("FINE:")) {
                                 finishMsg = cleanLine.removePrefix("FINE:").trim()
-                                break // Trovata fine, ignora il resto
+                                break
                             }
                         }
                         
@@ -249,7 +251,6 @@ jobs:
                             submitButton.isEnabled = true
                         } else {
                             logView.append("⚠️ IA confusa, riprovo...\n")
-                            // L'IA non ha formattato bene, la forziamo a ritentare
                             conversationHistory += "Errore di formato. Rispondi SOLO iniziando la riga con CMD: o FINE:.\n"
                             executeAgentLoop()
                         }
