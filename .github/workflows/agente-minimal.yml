@@ -43,8 +43,8 @@ jobs:
                 applicationId = "com.agente.gemma"
                 minSdk = 31
                 targetSdk = 34
-                versionCode = 34
-                versionName = "14.1-LiteRT-Fix"
+                versionCode = 35
+                versionName = "15.0-Pro-Sliders"
             }
             compileOptions {
                 sourceCompatibility = JavaVersion.VERSION_17
@@ -75,7 +75,6 @@ jobs:
                 android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
                 android:largeHeap="true">
                 
-                <!-- SPOSTATI QUI DENTRO -->
                 <uses-native-library android:name="libOpenCL.so" android:required="false" />
                 <uses-native-library android:name="libOpenCL-pixel.so" android:required="false" />
                 
@@ -89,7 +88,8 @@ jobs:
         </manifest>
         EOF
         
-                cat << 'EOF' > app/src/main/java/com/agente/gemma/GeminiAgentBrain.kt
+        # FILE 1: Il Cervello (Ora riceve tutti i parametri)
+        cat << 'EOF' > app/src/main/java/com/agente/gemma/GeminiAgentBrain.kt
         package com.agente.gemma
         
         import android.app.PendingIntent
@@ -117,21 +117,23 @@ jobs:
                 #FINE FINE#
             """.trimIndent() + "\n\n"
 
-            fun loadModel(modelPath: String, temperature: Float) {
-                logger("⏳ Avvio motore LiteRT (NPU Tensor G5 Mode)...\n")
+            fun loadModel(modelPath: String, temp: Float, topK: Int, topP: Float, maxTokens: Int) {
+                logger("⏳ Avvio motore LiteRT...\n")
+                logger("⚙️ Parametri: Temp=$temp | TopK=$topK | TopP=$topP | Tokens=$maxTokens\n")
                 try {
-                    // L'autentica magia: rimuoviamo setMaxTokens. 
-                    // Lasciamo che il file .litertlm gestisca la sua KV cache nativa sull'hardware!
                     val options = LlmInference.LlmInferenceOptions.builder()
                         .setModelPath(modelPath)
-                        .setTemperature(temperature)
+                        .setTemperature(temp)
+                        .setTopK(topK)
+                        .setTopP(topP)
+                        .setMaxTokens(maxTokens)
                         .build()
                     
                     llmInference?.close()
                     llmInference = LlmInference.createFromOptions(context, options)
-                    logger("✅ NPU inizializzata! Modello Tensor G5 operativo.\n\n")
+                    logger("✅ Motore NPU inizializzato con successo!\n\n")
                 } catch (e: Exception) {
-                    logger("❌ Errore caricamento: ${e.message}\n")
+                    logger("❌ Errore caricamento Kotlin: ${e.message}\n")
                 }
             }
 
@@ -146,7 +148,7 @@ jobs:
             fun processTermuxResult(exitCode: Int, out: String, err: String) {
                 stepCount++
                 if (stepCount >= 7) {
-                    logger("🛑 Limite azioni raggiunto. Forzo lo stop.\n\n")
+                    logger("🛑 Limite azioni raggiunto.\n\n")
                     onFinish()
                     return
                 }
@@ -185,7 +187,7 @@ jobs:
                                 logger("✅ Finito: $finishMsg\n\n")
                                 onFinish()
                             } else {
-                                logger("⚠️ Errore sintassi IA, riallineamento...\n")
+                                logger("⚠️ Errore sintassi IA...\n")
                                 conversationHistory += "ERRORE: Usa i tag.\n"
                                 thinkAndAct()
                             }
@@ -202,10 +204,7 @@ jobs:
             private fun sendToTermux(cmd: String) {
                 val resultIntent = Intent("com.agente.gemma.RESULT")
                 resultIntent.setPackage(context.packageName)
-                val pendingIntent = PendingIntent.getBroadcast(
-                    context, 0, resultIntent, 
-                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
-                )
+                val pendingIntent = PendingIntent.getBroadcast(context, 0, resultIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE)
                 
                 val intent = Intent("com.termux.RUN_COMMAND")
                 intent.setClassName("com.termux", "com.termux.app.RunCommandService")
@@ -223,8 +222,8 @@ jobs:
             }
         }
         EOF
-
         
+        # FILE 2: La UI con i 4 Slider
         cat << 'EOF' > app/src/main/java/com/agente/gemma/MainActivity.kt
         package com.agente.gemma
         
@@ -249,14 +248,17 @@ jobs:
             private lateinit var logView: TextView
             private lateinit var submitButton: Button
             private lateinit var initModelButton: Button
-            private lateinit var fileLabel: TextView
             private lateinit var agentBrain: GeminiAgentBrain
             
             private var fileContent: String = ""
-            private var currentTemperature = 0.7f
             private var isModelLoaded = false
             
-            private val PICK_MODEL_FILE = 1000
+            // Valori di default
+            private var valTemp = 0.7f
+            private var valTopK = 40
+            private var valTopP = 0.9f
+            private var valTokens = 1024
+            
             private val PICK_TXT_FILE = 1001
             private val scope = CoroutineScope(Dispatchers.Main + Job())
             
@@ -280,11 +282,10 @@ jobs:
                     onFinish = { submitButton.isEnabled = true }
                 )
                 
-                val filter = IntentFilter("com.agente.gemma.RESULT")
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    registerReceiver(termuxReceiver, filter, Context.RECEIVER_EXPORTED)
+                    registerReceiver(termuxReceiver, IntentFilter("com.agente.gemma.RESULT"), Context.RECEIVER_EXPORTED)
                 } else {
-                    registerReceiver(termuxReceiver, filter)
+                    registerReceiver(termuxReceiver, IntentFilter("com.agente.gemma.RESULT"))
                 }
                 
                 if (checkSelfPermission("com.termux.permission.RUN_COMMAND") != PackageManager.PERMISSION_GRANTED) {
@@ -293,104 +294,109 @@ jobs:
                 
                 val layout = LinearLayout(this).apply {
                     orientation = LinearLayout.VERTICAL
-                    setPadding(48, 48, 48, 48)
+                    setPadding(30, 30, 30, 30)
                 }
                 
-                val loadModelButton = Button(this).apply {
-                    text = "1. Importa Modello (.litertlm)"
-                    setOnClickListener {
-                        startActivityForResult(Intent(Intent.ACTION_GET_CONTENT).apply { type = "*/*" }, PICK_MODEL_FILE)
-                    }
+                // SLIDER 1: TEMPERATURA (0.0 - 1.0)
+                val lblTemp = TextView(this).apply { text = "Temperatura: $valTemp" }
+                val sbTemp = SeekBar(this).apply {
+                    max = 100; progress = 70
+                    setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                        override fun onProgressChanged(s: SeekBar?, p: Int, f: Boolean) { valTemp = p/100f; lblTemp.text = "Temperatura: $valTemp" }
+                        override fun onStartTrackingTouch(s: SeekBar?) {} override fun onStopTrackingTouch(s: SeekBar?) {}
+                    })
+                }
+                
+                // SLIDER 2: TOP-K (1 - 100)
+                val lblTopK = TextView(this).apply { text = "Top-K: $valTopK" }
+                val sbTopK = SeekBar(this).apply {
+                    max = 99; progress = 39
+                    setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                        override fun onProgressChanged(s: SeekBar?, p: Int, f: Boolean) { valTopK = p+1; lblTopK.text = "Top-K: $valTopK" }
+                        override fun onStartTrackingTouch(s: SeekBar?) {} override fun onStopTrackingTouch(s: SeekBar?) {}
+                    })
+                }
+                
+                // SLIDER 3: TOP-P (0.0 - 1.0)
+                val lblTopP = TextView(this).apply { text = "Top-P: $valTopP" }
+                val sbTopP = SeekBar(this).apply {
+                    max = 100; progress = 90
+                    setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                        override fun onProgressChanged(s: SeekBar?, p: Int, f: Boolean) { valTopP = p/100f; lblTopP.text = "Top-P: $valTopP" }
+                        override fun onStartTrackingTouch(s: SeekBar?) {} override fun onStopTrackingTouch(s: SeekBar?) {}
+                    })
+                }
+                
+                // SLIDER 4: MAX TOKENS (128 - 2048) -> Impatta molto sulla RAM!
+                val lblTokens = TextView(this).apply { text = "Max Tokens: $valTokens" }
+                val sbTokens = SeekBar(this).apply {
+                    max = 1920; progress = 1024 - 128
+                    setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                        override fun onProgressChanged(s: SeekBar?, p: Int, f: Boolean) { valTokens = p+128; lblTokens.text = "Max Tokens: $valTokens" }
+                        override fun onStartTrackingTouch(s: SeekBar?) {} override fun onStopTrackingTouch(s: SeekBar?) {}
+                    })
                 }
                 
                 initModelButton = Button(this).apply {
-                    text = "2. Verifica & Inizializza Motore IA"
-                    isEnabled = false
+                    text = "1. INIZIALIZZA NPU"
+                    isEnabled = File(filesDir, "custom_model.litertlm").exists()
                     setOnClickListener {
                         val modelFile = File(filesDir, "custom_model.litertlm")
                         if (modelFile.exists()) {
-                            // CONTROLLO DIMENSIONE FILE
-                            val sizeMb = modelFile.length() / (1024 * 1024)
-                            if (sizeMb < 100) { // Un modello Gemma pesa minimo 1.5 GB (1500 MB)
-                                logView.append("❌ ERRORE CRITICO: Il modello pesa solo $sizeMb MB! La copia da Android è fallita. Clicca di nuovo 'Importa' e attendi la fine del caricamento.\n")
-                                return@setOnClickListener
-                            }
-                            
-                            logView.append("✅ File integro ($sizeMb MB). Avvio motore...\n")
+                            logView.append("Avvio con Tokens=$valTokens...\n")
                             initModelButton.isEnabled = false
-                            
                             scope.launch(Dispatchers.IO) {
-                                agentBrain.loadModel(modelFile.absolutePath, currentTemperature)
+                                agentBrain.loadModel(modelFile.absolutePath, valTemp, valTopK, valTopP, valTokens)
                                 isModelLoaded = true
-                                withContext(Dispatchers.Main) { submitButton.isEnabled = true }
+                                withContext(Dispatchers.Main) { 
+                                    initModelButton.isEnabled = true
+                                    submitButton.isEnabled = true 
+                                }
                             }
+                        } else {
+                            logView.append("⚠️ Errore: File custom_model.litertlm non trovato.\n")
                         }
                     }
                 }
                 
-                val selectPromptButton = Button(this).apply {
-                    text = "3. Seleziona Prompt (.txt)"
-                    setOnClickListener {
-                        startActivityForResult(Intent(Intent.ACTION_GET_CONTENT).apply { type = "text/plain" }, PICK_TXT_FILE)
-                    }
+                val btnPrompt = Button(this).apply {
+                    text = "2. Seleziona Prompt (.txt)"
+                    setOnClickListener { startActivityForResult(Intent(Intent.ACTION_GET_CONTENT).apply { type = "text/plain" }, PICK_TXT_FILE) }
                 }
                 
                 submitButton = Button(this).apply {
-                    text = "4. AVVIA AGENTE"
+                    text = "3. AVVIA AGENTE"
                     isEnabled = false
                     setOnClickListener {
+                        if (!isModelLoaded || fileContent.isBlank()) return@setOnClickListener
                         submitButton.isEnabled = false
                         agentBrain.startTask(fileContent)
                     }
                 }
                 
-                logView = TextView(this).apply { 
-                    text = "--- Diagnostic Panel ---\n"
-                    textSize = 15f
-                }
+                logView = TextView(this).apply { text = "--- Pannello Parametri ---\n\n"; textSize = 14f }
                 
-                layout.addView(loadModelButton)
+                layout.addView(lblTemp); layout.addView(sbTemp)
+                layout.addView(lblTopK); layout.addView(sbTopK)
+                layout.addView(lblTopP); layout.addView(sbTopP)
+                layout.addView(lblTokens); layout.addView(sbTokens)
+                
                 layout.addView(initModelButton)
-                layout.addView(selectPromptButton)
+                layout.addView(btnPrompt)
                 layout.addView(submitButton)
                 layout.addView(logView)
                 
                 setContentView(ScrollView(this).apply { addView(layout) })
-                
-                if (File(filesDir, "custom_model.litertlm").exists()) {
-                    initModelButton.isEnabled = true
-                }
             }
             
             override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
                 super.onActivityResult(requestCode, resultCode, data)
-                if (resultCode == RESULT_OK && data?.data != null) {
-                    val uri = data.data!!
-                    if (requestCode == PICK_MODEL_FILE) {
-                        logView.append("⏳ COPIA IN CORSO: Non chiudere l'app...\n")
-                        scope.launch(Dispatchers.IO) {
-                            try {
-                                val outFile = File(filesDir, "custom_model.litertlm")
-                                // Copia sicura a blocchi larghi per file pesanti
-                                contentResolver.openInputStream(uri)?.use { input ->
-                                    outFile.outputStream().use { output ->
-                                        input.copyTo(output, 8192 * 4) 
-                                    }
-                                }
-                                withContext(Dispatchers.Main) {
-                                    val sizeMb = outFile.length() / (1024 * 1024)
-                                    logView.append("✅ Modello copiato ($sizeMb MB)!\n")
-                                    initModelButton.isEnabled = true
-                                }
-                            } catch (e: Exception) {
-                                withContext(Dispatchers.Main) {
-                                    logView.append("❌ Errore copia: ${e.message}\n")
-                                }
-                            }
-                        }
-                    } else if (requestCode == PICK_TXT_FILE) {
-                        fileContent = contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } ?: ""
+                if (resultCode == RESULT_OK && data?.data != null && requestCode == PICK_TXT_FILE) {
+                    try {
+                        fileContent = contentResolver.openInputStream(data.data!!)?.bufferedReader()?.use { it.readText() } ?: ""
                         logView.append("✅ Prompt caricato!\n")
+                    } catch (e: Exception) {
+                        logView.append("❌ Errore lettura prompt\n")
                     }
                 }
             }
@@ -416,3 +422,4 @@ jobs:
       with:
         name: Agente-LiteRT-Termux
         path: app/build/outputs/apk/debug/app-debug.apk
+        
