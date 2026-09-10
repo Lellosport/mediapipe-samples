@@ -43,8 +43,8 @@ jobs:
                 applicationId = "com.agente.gemma"
                 minSdk = 31
                 targetSdk = 34
-                versionCode = 32
-                versionName = "13.1"
+                versionCode = 33
+                versionName = "14.0-LiteRT"
             }
             compileOptions {
                 sourceCompatibility = JavaVersion.VERSION_17
@@ -55,7 +55,8 @@ jobs:
             }
         }
         dependencies { 
-            implementation("com.google.mlkit:genai-prompt:1.0.0-beta2")
+            // Abbandoniamo ML Kit e passiamo a MediaPipe LiteRT!
+            implementation("com.google.mediapipe:tasks-genai:0.10.14")
             implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
             implementation("androidx.core:core-ktx:1.12.0")
         }
@@ -68,7 +69,7 @@ jobs:
                 <package android:name="com.termux" />
             </queries>
             <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
-            <application android:label="Gemini Agent" android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+            <application android:label="Gemini Agent Pro" android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
                 <activity android:name=".MainActivity" android:exported="true">
                     <intent-filter>
                         <action android:name="android.intent.action.MAIN" />
@@ -79,7 +80,7 @@ jobs:
         </manifest>
         EOF
         
-        # FILE 1: Il Cervello (Configurazione fixata per la Beta di ML Kit)
+        # FILE 1: Il Cervello (Ora usa MediaPipe LlmInference)
         cat << 'EOF' > app/src/main/java/com/agente/gemma/GeminiAgentBrain.kt
         package com.agente.gemma
         
@@ -88,43 +89,63 @@ jobs:
         import android.content.Intent
         import android.os.Build
         import kotlinx.coroutines.*
-        import com.google.mlkit.genai.prompt.Generation
+        import com.google.mediapipe.tasks.genai.llminference.LlmInference
+        import java.io.File
         
         class GeminiAgentBrain(private val context: Context, private val logger: (String) -> Unit, private val onFinish: () -> Unit) {
             private val scope = CoroutineScope(Dispatchers.IO + Job())
             private var conversationHistory = ""
             private var stepCount = 0
+            private var llmInference: LlmInference? = null
             
             private val systemPrompt = """
-                Sei un Ingegnere Software Autonomo di livello Senior.
+                Sei un Ingegnere Software Autonomo di altissimo livello.
                 DEVI USARE OBBILGATORIAMENTE I DELIMITATORI. Non scrivere codice fuori da questi tag.
                 
-                REGOLE DI SVILUPPO (FONDAMENTALI):
-                - NON essere pigro. Scrivi file lunghi, completi e ricchi di dettagli.
-                - Se scrivi HTML, includi SEMPRE CSS in linea elaborato, animazioni, immagini e struttura professionale.
-                - Non usare MAI placeholder come "inserisci testo qui". Fai tutto tu.
+                REGOLE DI SVILUPPO:
+                - Scrivi file completi, ricchi di dettagli, usa CSS elaborati e animazioni se scrivi HTML.
                 
-                Per agire su Linux:
+                Per agire su Linux usa:
                 #INIZIO COMANDO#
                 tuo_comando_qui
                 #FINE COMANDO#
                 
-                Per concludere il lavoro:
+                Per concludere il lavoro usa:
                 #INIZIO FINE#
                 completato
                 #FINE FINE#
                 
                 REGOLE MULTIMEDIALI:
                 - Per spostare file usa mv o cp.
-                - Per VISUALIZZARE un'immagine o RIPRODURRE un audio, usa: termux-open nomefile.ext
+                - Per VISUALIZZARE immagini o RIPRODURRE audio usa: termux-open nomefile.ext
             """.trimIndent() + "\n\n"
 
-            fun startTask(objective: String, temperature: Float) {
+            fun loadModel(modelPath: String, temperature: Float) {
+                logger("⏳ Inizializzazione motore LiteRT in corso (Temp: $temperature)...\n")
+                try {
+                    val options = LlmInference.LlmInferenceOptions.builder()
+                        .setModelPath(modelPath)
+                        .setMaxTokens(2048)
+                        .setTemperature(temperature)
+                        .build()
+                    
+                    llmInference?.close() // Chiude il modello precedente se esiste
+                    llmInference = LlmInference.createFromOptions(context, options)
+                    logger("✅ Modello caricato nella NPU!\n\n")
+                } catch (e: Exception) {
+                    logger("❌ Errore caricamento modello: ${e.message}\n\n")
+                }
+            }
+
+            fun startTask(objective: String) {
+                if (llmInference == null) {
+                    logger("⚠️ Devi prima inizializzare il modello!\n")
+                    onFinish()
+                    return
+                }
                 stepCount = 0
-                // La temperatura è ignorata in questa versione Beta locale, 
-                // ma il prompt rigoroso imporrà comunque creatività.
                 conversationHistory = systemPrompt + "Obiettivo: $objective\n"
-                logger("🎯 Avvio task (Modalità IA Locale)...\n")
+                logger("🎯 Avvio task autonomo...\n")
                 thinkAndAct()
             }
 
@@ -151,10 +172,8 @@ jobs:
             private fun thinkAndAct() {
                 scope.launch {
                     try {
-                        // Utilizziamo il client base supportato dalla Beta
-                        val model = Generation.getClient()
-                        val response = model.generateContent(conversationHistory)
-                        val aiRawText = response.candidates.firstOrNull()?.text?.trim() ?: ""
+                        // Generazione tramite LiteRT!
+                        val aiRawText = llmInference?.generateResponse(conversationHistory)?.trim() ?: ""
                         
                         var cmdToRun = ""
                         var finishMsg = ""
@@ -174,7 +193,7 @@ jobs:
                                 logger("✅ Finito: $finishMsg\n\n")
                                 onFinish()
                             } else {
-                                logger("⚠️ Errore sintassi IA, riallineamento in corso...\n")
+                                logger("⚠️ Errore sintassi IA, riallineamento...\n")
                                 conversationHistory += "ERRORE: Sintassi non trovata o vuota. Usa #INIZIO COMANDO# o #INIZIO FINE#.\n"
                                 thinkAndAct()
                             }
@@ -213,7 +232,7 @@ jobs:
         }
         EOF
         
-        # FILE 2: La UI (Con file picker e slider mantenuti)
+        # FILE 2: La UI (Gestione doppio file: modello e prompt)
         cat << 'EOF' > app/src/main/java/com/agente/gemma/MainActivity.kt
         package com.agente.gemma
         
@@ -231,16 +250,23 @@ jobs:
         import android.widget.ScrollView
         import android.widget.SeekBar
         import android.widget.TextView
+        import kotlinx.coroutines.*
+        import java.io.File
         
         class MainActivity : Activity() {
             private lateinit var logView: TextView
             private lateinit var submitButton: Button
+            private lateinit var initModelButton: Button
             private lateinit var fileLabel: TextView
             private lateinit var agentBrain: GeminiAgentBrain
             
             private var fileContent: String = ""
             private var currentTemperature = 0.7f
+            private var isModelLoaded = false
+            
+            private val PICK_MODEL_FILE = 1000
             private val PICK_TXT_FILE = 1001
+            private val scope = CoroutineScope(Dispatchers.Main + Job())
             
             private val termuxReceiver = object : BroadcastReceiver() {
                 override fun onReceive(context: Context, intent: Intent) {
@@ -281,17 +307,56 @@ jobs:
                 }
                 
                 val tempLabel = TextView(this).apply {
-                    text = "L'IA Cloud usa la Temperatura. L'IA Locale (Nano) è forzata alla massima precisione dal sistema."
+                    text = "Temperatura: 0.7\nScegli e clicca 'Inizializza' per applicarla."
                     setPadding(0, 0, 0, 10)
                 }
                 
+                val tempSlider = SeekBar(this).apply {
+                    max = 100
+                    progress = 70
+                    setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                        override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                            currentTemperature = progress / 100f
+                            tempLabel.text = "Temperatura: $currentTemperature\nScegli e clicca 'Inizializza' per applicarla."
+                        }
+                        override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+                        override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+                    })
+                }
+                
+                val loadModelButton = Button(this).apply {
+                    text = "1. Importa Modello (.litertlm)"
+                    setOnClickListener {
+                        val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
+                            type = "*/*"
+                            addCategory(Intent.CATEGORY_OPENABLE)
+                        }
+                        startActivityForResult(intent, PICK_MODEL_FILE)
+                    }
+                }
+                
+                initModelButton = Button(this).apply {
+                    text = "2. Inizializza Motore IA"
+                    isEnabled = false
+                    setOnClickListener {
+                        val modelFile = File(filesDir, "custom_model.litertlm")
+                        if (modelFile.exists()) {
+                            // Carica il modello in un thread asincrono per non bloccare la UI
+                            scope.launch(Dispatchers.IO) {
+                                agentBrain.loadModel(modelFile.absolutePath, currentTemperature)
+                                isModelLoaded = true
+                            }
+                        }
+                    }
+                }
+                
                 fileLabel = TextView(this).apply {
-                    text = "Nessun file selezionato"
+                    text = "Prompt: Nessun file .txt selezionato"
                     setPadding(0, 20, 0, 20)
                 }
                 
-                val selectFileButton = Button(this).apply {
-                    text = "Seleziona File .txt (Il tuo Prompt)"
+                val selectPromptButton = Button(this).apply {
+                    text = "3. Seleziona File Prompt (.txt)"
                     setOnClickListener {
                         val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
                             type = "text/plain"
@@ -301,49 +366,79 @@ jobs:
                     }
                 }
                 
-                logView = TextView(this).apply { 
-                    text = "---\n\n"
-                    textSize = 15f
-                }
-                
                 submitButton = Button(this).apply {
-                    text = "Avvia Agente"
+                    text = "4. AVVIA AGENTE"
                     setOnClickListener {
+                        if (!isModelLoaded) {
+                            logView.append("⚠️ Devi prima inizializzare il modello!\n")
+                            return@setOnClickListener
+                        }
                         if (fileContent.isBlank()) {
-                            logView.append("⚠️ Errore: Seleziona prima un file .txt!\n")
+                            logView.append("⚠️ Manca il prompt .txt!\n")
                             return@setOnClickListener
                         }
                         submitButton.isEnabled = false
-                        logView.append("\n🎯 OBIETTIVO DAL FILE (${fileContent.length} char)\n")
-                        agentBrain.startTask(fileContent, currentTemperature)
+                        logView.append("\n🎯 Esecuzione Prompt...\n")
+                        agentBrain.startTask(fileContent)
                     }
                 }
                 
+                logView = TextView(this).apply { 
+                    text = "--- Agente LiteRT con Modello Custom ---\n"
+                    textSize = 15f
+                }
+                
                 layout.addView(tempLabel)
-                layout.addView(selectFileButton)
+                layout.addView(tempSlider)
+                layout.addView(loadModelButton)
+                layout.addView(initModelButton)
+                layout.addView(selectPromptButton)
                 layout.addView(fileLabel)
                 layout.addView(submitButton)
                 layout.addView(logView)
                 
                 setContentView(ScrollView(this).apply { addView(layout) })
+                
+                // Controlla se il modello è già stato importato in sessioni precedenti
+                if (File(filesDir, "custom_model.litertlm").exists()) {
+                    initModelButton.isEnabled = true
+                    logView.append("✅ Trovato modello importato in memoria.\n")
+                }
             }
             
             override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
                 super.onActivityResult(requestCode, resultCode, data)
-                if (requestCode == PICK_TXT_FILE && resultCode == RESULT_OK) {
-                    data?.data?.let { uri ->
+                if (resultCode == RESULT_OK && data?.data != null) {
+                    val uri = data.data!!
+                    if (requestCode == PICK_MODEL_FILE) {
+                        logView.append("⏳ Copia del modello in corso (può volerci qualche istante)...\n")
+                        scope.launch(Dispatchers.IO) {
+                            try {
+                                val outFile = File(filesDir, "custom_model.litertlm")
+                                contentResolver.openInputStream(uri)?.use { input ->
+                                    outFile.outputStream().use { output ->
+                                        input.copyTo(output)
+                                    }
+                                }
+                                withContext(Dispatchers.Main) {
+                                    logView.append("✅ Modello copiato con successo!\n")
+                                    initModelButton.isEnabled = true
+                                }
+                            } catch (e: Exception) {
+                                withContext(Dispatchers.Main) {
+                                    logView.append("❌ Errore copia modello: ${e.message}\n")
+                                }
+                            }
+                        }
+                    } else if (requestCode == PICK_TXT_FILE) {
                         try {
                             val content = contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
                             if (!content.isNullOrBlank()) {
                                 fileContent = content
-                                fileLabel.text = "✅ File caricato con successo!"
-                            } else {
-                                fileLabel.text = "❌ Il file è vuoto"
-                                fileContent = ""
+                                fileLabel.text = "✅ Prompt caricato!"
                             }
                         } catch (e: Exception) {
-                            fileLabel.text = "❌ Errore durante la lettura"
-                            fileContent = ""
+                            fileLabel.text = "❌ Errore lettura prompt"
                         }
                     }
                 }
@@ -352,6 +447,7 @@ jobs:
             override fun onDestroy() {
                 super.onDestroy()
                 unregisterReceiver(termuxReceiver)
+                scope.cancel()
             }
         }
         EOF
@@ -367,6 +463,6 @@ jobs:
     - name: Salva l'APK
       uses: actions/upload-artifact@v4
       with:
-        name: Agente-GeminiNano-Termux
+        name: Agente-LiteRT-Termux
         path: app/build/outputs/apk/debug/app-debug.apk
-        
+                            
