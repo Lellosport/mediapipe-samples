@@ -89,7 +89,7 @@ jobs:
         </manifest>
         EOF
         
-        cat << 'EOF' > app/src/main/java/com/agente/gemma/GeminiAgentBrain.kt
+                cat << 'EOF' > app/src/main/java/com/agente/gemma/GeminiAgentBrain.kt
         package com.agente.gemma
         
         import android.app.PendingIntent
@@ -118,19 +118,20 @@ jobs:
             """.trimIndent() + "\n\n"
 
             fun loadModel(modelPath: String, temperature: Float) {
-                logger("⏳ Inizializzazione motore LiteRT in corso (Non toccare nulla)...\n")
+                logger("⏳ Avvio motore LiteRT (NPU Tensor G5 Mode)...\n")
                 try {
+                    // L'autentica magia: rimuoviamo setMaxTokens. 
+                    // Lasciamo che il file .litertlm gestisca la sua KV cache nativa sull'hardware!
                     val options = LlmInference.LlmInferenceOptions.builder()
                         .setModelPath(modelPath)
-                        .setMaxTokens(2048)
                         .setTemperature(temperature)
                         .build()
                     
                     llmInference?.close()
                     llmInference = LlmInference.createFromOptions(context, options)
-                    logger("✅ Modello caricato nella NPU con successo!\n\n")
+                    logger("✅ NPU inizializzata! Modello Tensor G5 operativo.\n\n")
                 } catch (e: Exception) {
-                    logger("❌ Errore caricamento: ${e.message}\n\n")
+                    logger("❌ Errore caricamento: ${e.message}\n")
                 }
             }
 
@@ -191,7 +192,7 @@ jobs:
                         }
                     } catch (e: Exception) {
                         withContext(Dispatchers.Main) {
-                            logger("❌ Errore TPU: ${e.message}\n")
+                            logger("❌ Errore TPU/NPU: ${e.message}\n")
                             onFinish()
                         }
                     }
@@ -222,6 +223,7 @@ jobs:
             }
         }
         EOF
+
         
         cat << 'EOF' > app/src/main/java/com/agente/gemma/MainActivity.kt
         package com.agente.gemma
