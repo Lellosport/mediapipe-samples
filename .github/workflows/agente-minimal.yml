@@ -43,8 +43,8 @@ jobs:
                 applicationId = "com.agente.gemma"
                 minSdk = 31
                 targetSdk = 34
-                versionCode = 24
-                versionName = "9.1"
+                versionCode = 25
+                versionName = "9.2"
             }
             compileOptions {
                 sourceCompatibility = JavaVersion.VERSION_17
@@ -106,31 +106,36 @@ jobs:
             
             private var conversationHistory = ""
             private val systemPrompt = """
-                Sei un agente terminale Linux autonomo. Procedi un passo alla volta.
+                Sei un sistema automatico. Esegui l'obiettivo scrivendo comandi bash.
                 
-                REGOLE FERREE:
-                1. FAI UNA SOLA AZIONE ALLA VOLTA. Non inserire mai l'azione e la fine nello stesso messaggio.
-                2. Per agire, rispondi SOLO con il formato: CMD: tuo_comando
-                3. Se l'obiettivo è completato, rispondi SOLO con il formato: FINE: messaggio_di_conferma
-                4. Se vedi che il comando precedente ha fallito, prova un comando o una sintassi diversa, non ripetere mai lo stesso comando guasto all'infinito.
+                REGOLA 1: Se devi agire, rispondi SOLO con una riga che inizia per:
+                CMD: <tuo_comando>
+                
+                REGOLA 2: Se il task è finito, rispondi SOLO con una riga che inizia per:
+                FINE: completato
+                
+                NON scrivere altro. Non spiegare nulla.
             """.trimIndent() + "\n\n"
         
             private val termuxReceiver = object : BroadcastReceiver() {
                 override fun onReceive(context: Context, intent: Intent) {
                     val bundle = intent.extras ?: return
                     val exitCode = bundle.getInt("com.termux.RUN_COMMAND_EXIT_CODE")
-                    val out = bundle.getString("com.termux.RUN_COMMAND_STDOUT")?.trim() ?: ""
-                    val err = bundle.getString("com.termux.RUN_COMMAND_STDERR")?.trim() ?: ""
+                    var out = bundle.getString("com.termux.RUN_COMMAND_STDOUT")?.trim() ?: ""
+                    var err = bundle.getString("com.termux.RUN_COMMAND_STDERR")?.trim() ?: ""
+                    
+                    if (out.length > 200) out = out.take(200) + "..."
+                    if (err.length > 200) err = err.take(200) + "..."
                     
                     logView.append("   [Exit Code: $exitCode]\n")
                     
-                    // Protezione contro i loop: limitiamo la cronologia tenendo solo gli ultimi due scambi
+                    // Pulizia ciclica aggressiva per evitare overload cognitivo
                     val historyLines = conversationHistory.lines()
-                    if (historyLines.size > 20) {
-                        conversationHistory = systemPrompt + historyLines.takeLast(10).joinToString("\n") + "\n"
+                    if (historyLines.size > 15) {
+                        conversationHistory = systemPrompt + historyLines.takeLast(6).joinToString("\n") + "\n"
                     }
                     
-                    conversationHistory += "RISULTATO ULTIMO COMANDO:\nExit code: $exitCode\nOutput: $out\nErrore: $err\nCosa fai adesso?\n"
+                    conversationHistory += "Termux ha risposto al tuo comando. Code: $exitCode, Out: $out, Err: $err.\nProssima mossa?\n"
                     
                     executeAgentLoop()
                 }
@@ -156,7 +161,7 @@ jobs:
                 }
                 
                 logView = TextView(this).apply { 
-                    text = "--- Agente Gemini Autonomo v2 ---\n\n"
+                    text = "--- Agente Gemini Autonomo v3 ---\n\n"
                     textSize = 15f
                 }
                 
@@ -184,7 +189,7 @@ jobs:
                     
                     logView.append("\n🎯 OBIETTIVO: $userRequest\n")
                     
-                    conversationHistory = systemPrompt + "Obiettivo dell'utente: $userRequest\nQual è la tua prima azione?\n"
+                    conversationHistory = systemPrompt + "Obiettivo dell'utente: $userRequest\nProssima mossa?\n"
                     executeAgentLoop()
                 }
             }
@@ -199,13 +204,24 @@ jobs:
                         
                         val aiRawText = response.candidates.firstOrNull()?.text?.trim() ?: ""
                         
-                        // FIX: Estrazione intelligente che scarta la confusione dell'IA
-                        if (aiRawText.contains("CMD:")) {
-                            // Prende la stringa dopo CMD: e si ferma al primo accapo
-                            val cmd = aiRawText.substringAfter("CMD:").split("\n")[0].trim()
-                            logView.append("🤖 Lancia: $cmd\n")
-                            
-                            conversationHistory += "TUA AZIONE: Hai lanciato il comando '$cmd'.\n"
+                        // Scanner di estrazione chirurgica: cerca linea per linea ignorando il rumore
+                        var cmdToRun = ""
+                        var finishMsg = ""
+                        
+                        for (line in aiRawText.lines()) {
+                            val cleanLine = line.trim()
+                            if (cleanLine.startsWith("CMD:")) {
+                                cmdToRun = cleanLine.removePrefix("CMD:").trim()
+                                break // Trovato comando, ignora il resto
+                            } else if (cleanLine.startsWith("FINE:")) {
+                                finishMsg = cleanLine.removePrefix("FINE:").trim()
+                                break // Trovata fine, ignora il resto
+                            }
+                        }
+                        
+                        if (cmdToRun.isNotEmpty()) {
+                            logView.append("🤖 Lancia: $cmdToRun\n")
+                            conversationHistory += "Tu hai eseguito: CMD: $cmdToRun\n"
                             
                             val resultIntent = Intent("com.agente.gemma.RESULT")
                             resultIntent.setPackage(packageName)
@@ -217,7 +233,7 @@ jobs:
                             val intent = Intent("com.termux.RUN_COMMAND")
                             intent.setClassName("com.termux", "com.termux.app.RunCommandService")
                             intent.putExtra("com.termux.RUN_COMMAND_PATH", "/data/data/com.termux/files/usr/bin/sh")
-                            intent.putExtra("com.termux.RUN_COMMAND_ARGUMENTS", arrayOf("-c", cmd))
+                            intent.putExtra("com.termux.RUN_COMMAND_ARGUMENTS", arrayOf("-c", cmdToRun))
                             intent.putExtra("com.termux.RUN_COMMAND_WORKDIR", "/data/data/com.termux/files/home")
                             intent.putExtra("com.termux.RUN_COMMAND_BACKGROUND", true)
                             intent.putExtra("com.termux.RUN_COMMAND_PENDING_INTENT", pendingIntent)
@@ -228,13 +244,14 @@ jobs:
                                 startService(intent)
                             }
                             
-                        } else if (aiRawText.contains("FINE:")) {
-                            val msg = aiRawText.substringAfter("FINE:").split("\n")[0].trim()
-                            logView.append("✅ Finito: $msg\n\n")
+                        } else if (finishMsg.isNotEmpty()) {
+                            logView.append("✅ Finito: $finishMsg\n\n")
                             submitButton.isEnabled = true
                         } else {
-                            logView.append("⚠️ Formato errato: $aiRawText\n\n")
-                            submitButton.isEnabled = true
+                            logView.append("⚠️ IA confusa, riprovo...\n")
+                            // L'IA non ha formattato bene, la forziamo a ritentare
+                            conversationHistory += "Errore di formato. Rispondi SOLO iniziando la riga con CMD: o FINE:.\n"
+                            executeAgentLoop()
                         }
                     } catch (e: Exception) { 
                         logView.append("❌ Errore TPU: ${e.message}\n")
