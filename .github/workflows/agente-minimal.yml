@@ -43,8 +43,8 @@ jobs:
                 applicationId = "com.agente.gemma"
                 minSdk = 31
                 targetSdk = 34
-                versionCode = 38
-                versionName = "16.0-Termux-Bridge"
+                versionCode = 39
+                versionName = "17.0-Termux-Bridge-Debug"
             }
             compileOptions {
                 sourceCompatibility = JavaVersion.VERSION_17
@@ -55,16 +55,14 @@ jobs:
             }
         }
         dependencies { 
-            // Addio MediaPipe! Ora l'app è leggerissima.
             implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
             implementation("androidx.core:core-ktx:1.12.0")
         }
         EOF
         
-        # MANIFEST: Aggiunti permessi INTERNET e usesCleartextTraffic per parlare con localhost
         cat << 'EOF' > app/src/main/AndroidManifest.xml
         <?xml version="1.0" encoding="utf-8"?>
-        <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+        <manifest xmlns:android="[http://schemas.android.com/apk/res/android](http://schemas.android.com/apk/res/android)">
             <queries>
                 <package android:name="com.termux" />
             </queries>
@@ -87,7 +85,7 @@ jobs:
         </manifest>
         EOF
         
-        # FILE 1: Il Cervello (Ora si connette al Server Llama.cpp)
+        # FILE 1: Il Cervello (Con flag di Stop e Log Grezzo)
         cat << 'EOF' > app/src/main/java/com/agente/gemma/GeminiAgentBrain.kt
         package com.agente.gemma
         
@@ -105,9 +103,12 @@ jobs:
             private var conversationHistory = ""
             private var stepCount = 0
             
+            @Volatile
+            private var isRunning = false
+            
             private val systemPrompt = """
                 Sei un Ingegnere Software Autonomo.
-                USA I DELIMITATORI. Non scrivere fuori dai tag.
+                USA I DELIMITATORI. Non scrivere fuori dai tag e non aggiungere testo discorsivo.
                 #INIZIO COMANDO#
                 comando_qui
                 #FINE COMANDO#
@@ -118,16 +119,26 @@ jobs:
             """.trimIndent() + "\n\n"
 
             fun startTask(objective: String, temp: Float, topK: Int, maxTokens: Int) {
+                isRunning = true
                 stepCount = 0
                 conversationHistory = systemPrompt + "Obiettivo: $objective\n"
                 logger("🎯 Avvio task (Connessione a Termux)...\n")
                 thinkAndAct(temp, topK, maxTokens)
             }
+            
+            fun stopTask() {
+                isRunning = false
+                logger("🛑 TASK INTERROTTO DALL'UTENTE.\n\n")
+                onFinish()
+            }
 
             fun processTermuxResult(exitCode: Int, out: String, err: String, temp: Float, topK: Int, maxTokens: Int) {
+                if (!isRunning) return
+                
                 stepCount++
-                if (stepCount >= 7) {
-                    logger("🛑 Limite azioni raggiunto.\n\n")
+                if (stepCount >= 10) {
+                    logger("🛑 Limite azioni raggiunto. Mi fermo.\n\n")
+                    isRunning = false
                     onFinish()
                     return
                 }
@@ -145,9 +156,11 @@ jobs:
             }
 
             private fun thinkAndAct(temp: Float, topK: Int, maxTokens: Int) {
+                if (!isRunning) return
+                
                 scope.launch {
                     try {
-                        val url = URL("http://127.0.0.1:8080/completion")
+                        val url = URL("[http://127.0.0.1:8080/completion](http://127.0.0.1:8080/completion)")
                         val conn = url.openConnection() as HttpURLConnection
                         conn.requestMethod = "POST"
                         conn.setRequestProperty("Content-Type", "application/json; utf-8")
@@ -158,6 +171,7 @@ jobs:
                             put("temperature", temp)
                             put("top_k", topK)
                             put("n_predict", maxTokens)
+                            put("stop", listOf("Exit:", "Out:", "Err:")) // Previene allucinazioni del modello
                         }.toString()
 
                         conn.outputStream.use { os ->
@@ -171,6 +185,12 @@ jobs:
                             val jsonResponse = JSONObject(responseBody)
                             val aiRawText = jsonResponse.optString("content", "").trim()
                             
+                            withContext(Dispatchers.Main) {
+                                logger("🧠 [OUTPUT GREZZO IA]:\n$aiRawText\n\n")
+                            }
+                            
+                            if (!isRunning) return@launch
+                            
                             var cmdToRun = ""
                             var finishMsg = ""
                             
@@ -182,27 +202,30 @@ jobs:
                             
                             withContext(Dispatchers.Main) {
                                 if (cmdToRun.isNotBlank()) {
-                                    logger("🤖 Eseguo:\n$cmdToRun\n")
+                                    logger("🤖 Eseguo Comando:\n$cmdToRun\n")
                                     conversationHistory += "Hai inviato un comando.\n"
                                     sendToTermux(cmdToRun)
                                 } else if (finishMsg.isNotBlank()) {
                                     logger("✅ Finito: $finishMsg\n\n")
+                                    isRunning = false
                                     onFinish()
                                 } else {
-                                    logger("⚠️ Errore sintassi IA...\n")
-                                    conversationHistory += "ERRORE: Usa i tag.\n"
+                                    logger("⚠️ SINTASSI NON TROVATA. Riallineamento...\n")
+                                    conversationHistory += "ERRORE SINTASSI: Rispondi SOLO con i delimitatori richiesti.\n"
                                     thinkAndAct(temp, topK, maxTokens)
                                 }
                             }
                         } else {
                             withContext(Dispatchers.Main) {
-                                logger("❌ Errore Server Termux: Codice $responseCode\nIl server è acceso?\n")
+                                logger("❌ Errore Server Termux: $responseCode\n")
+                                isRunning = false
                                 onFinish()
                             }
                         }
                     } catch (e: Exception) {
                         withContext(Dispatchers.Main) {
-                            logger("❌ Errore Connessione: ${e.message}\nHai avviato il server su Termux?\n")
+                            logger("❌ Errore Rete: ${e.message}\nIl server Termux è acceso?\n")
+                            isRunning = false
                             onFinish()
                         }
                     }
@@ -231,7 +254,7 @@ jobs:
         }
         EOF
         
-        # FILE 2: La UI (Pulita e ottimizzata)
+        # FILE 2: La UI (Aggiunto il pulsante Stop affiancato)
         cat << 'EOF' > app/src/main/java/com/agente/gemma/MainActivity.kt
         package com.agente.gemma
         
@@ -241,6 +264,7 @@ jobs:
         import android.content.Intent
         import android.content.IntentFilter
         import android.content.pm.PackageManager
+        import android.graphics.Color
         import android.os.Build
         import android.os.Bundle
         import android.view.WindowManager
@@ -253,11 +277,11 @@ jobs:
         class MainActivity : Activity() {
             private lateinit var logView: TextView
             private lateinit var submitButton: Button
+            private lateinit var stopButton: Button
             private lateinit var agentBrain: GeminiAgentBrain
             
             private var fileContent: String = ""
             
-            // Valori
             private var valTemp = 0.7f
             private var valTopK = 40
             private var valTokens = 2048
@@ -281,7 +305,11 @@ jobs:
                 agentBrain = GeminiAgentBrain(
                     context = this,
                     logger = { msg -> logView.append(msg) },
-                    onFinish = { submitButton.isEnabled = true }
+                    onFinish = { 
+                        submitButton.isEnabled = true
+                        stopButton.isEnabled = false
+                        stopButton.setTextColor(Color.GRAY)
+                    }
                 )
                 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -301,7 +329,6 @@ jobs:
                 
                 val lblTitle = TextView(this).apply { text = "Gemini Agent Bridge\n"; textSize = 18f; setTypeface(null, android.graphics.Typeface.BOLD) }
                 
-                // SLIDERS
                 val lblTemp = TextView(this).apply { text = "Temperatura: $valTemp" }
                 val sbTemp = SeekBar(this).apply { max = 100; progress = 70; setOnSeekBarChangeListener(object: SeekBar.OnSeekBarChangeListener{ override fun onProgressChanged(s: SeekBar?, p: Int, f: Boolean) { valTemp = p/100f; lblTemp.text = "Temperatura: $valTemp" }; override fun onStartTrackingTouch(s: SeekBar?) {}; override fun onStopTrackingTouch(s: SeekBar?) {}}) }
                 
@@ -316,26 +343,48 @@ jobs:
                     setOnClickListener { startActivityForResult(Intent(Intent.ACTION_GET_CONTENT).apply { type = "text/plain" }, PICK_TXT_FILE) }
                 }
                 
+                // Layout orizzontale per i tasti Start/Stop
+                val buttonLayout = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    weightSum = 2f
+                }
+                
                 submitButton = Button(this).apply {
                     text = "2. AVVIA AGENTE"
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
                     setOnClickListener {
                         if (fileContent.isBlank()) {
                             logView.append("⚠️ Carica un prompt prima!\n")
                             return@setOnClickListener
                         }
                         submitButton.isEnabled = false
+                        stopButton.isEnabled = true
+                        stopButton.setTextColor(Color.RED)
                         agentBrain.startTask(fileContent, valTemp, valTopK, valTokens)
                     }
                 }
                 
-                logView = TextView(this).apply { text = "--- Console ---\nAssicurati che il server Termux sia acceso in background.\n\n"; textSize = 14f }
+                stopButton = Button(this).apply {
+                    text = "STOP"
+                    isEnabled = false
+                    setTextColor(Color.GRAY)
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                    setOnClickListener {
+                        agentBrain.stopTask()
+                    }
+                }
+                
+                buttonLayout.addView(submitButton)
+                buttonLayout.addView(stopButton)
+                
+                logView = TextView(this).apply { text = "--- Console di Debug ---\nGuarda cosa genera l'IA per capire dove sbaglia la sintassi!\n\n"; textSize = 14f }
                 
                 layout.addView(lblTitle)
                 layout.addView(lblTemp); layout.addView(sbTemp)
                 layout.addView(lblTopK); layout.addView(sbTopK)
                 layout.addView(lblTokens); layout.addView(sbTokens)
                 layout.addView(btnPrompt)
-                layout.addView(submitButton)
+                layout.addView(buttonLayout)
                 layout.addView(logView)
                 
                 setContentView(ScrollView(this).apply { addView(layout) })
@@ -371,6 +420,5 @@ jobs:
     - name: Salva l'APK
       uses: actions/upload-artifact@v4
       with:
-        name: Agente-Bridge-Termux
+        name: Agente-Bridge-Debug
         path: app/build/outputs/apk/debug/app-debug.apk
-        
