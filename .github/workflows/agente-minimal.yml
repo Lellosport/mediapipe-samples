@@ -43,8 +43,8 @@ jobs:
                 applicationId = "com.agente.gemma"
                 minSdk = 31
                 targetSdk = 34
-                versionCode = 39
-                versionName = "17.0-Termux-Bridge-Debug"
+                versionCode = 40
+                versionName = "17.1-Termux-Bridge-Fix"
             }
             compileOptions {
                 sourceCompatibility = JavaVersion.VERSION_17
@@ -60,9 +60,10 @@ jobs:
         }
         EOF
         
+        # MANIFEST: Blindato con namespace esplicito
         cat << 'EOF' > app/src/main/AndroidManifest.xml
         <?xml version="1.0" encoding="utf-8"?>
-        <manifest xmlns:android="[http://schemas.android.com/apk/res/android](http://schemas.android.com/apk/res/android)">
+        <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.agente.gemma">
             <queries>
                 <package android:name="com.termux" />
             </queries>
@@ -75,7 +76,7 @@ jobs:
                 android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
                 android:usesCleartextTraffic="true">
                 
-                <activity android:name=".MainActivity" android:exported="true">
+                <activity android:name="com.agente.gemma.MainActivity" android:exported="true">
                     <intent-filter>
                         <action android:name="android.intent.action.MAIN" />
                         <category android:name="android.intent.category.LAUNCHER" />
@@ -85,7 +86,6 @@ jobs:
         </manifest>
         EOF
         
-        # FILE 1: Il Cervello (Con flag di Stop e Log Grezzo)
         cat << 'EOF' > app/src/main/java/com/agente/gemma/GeminiAgentBrain.kt
         package com.agente.gemma
         
@@ -160,7 +160,7 @@ jobs:
                 
                 scope.launch {
                     try {
-                        val url = URL("[http://127.0.0.1:8080/completion](http://127.0.0.1:8080/completion)")
+                        val url = URL("http://127.0.0.1:8080/completion")
                         val conn = url.openConnection() as HttpURLConnection
                         conn.requestMethod = "POST"
                         conn.setRequestProperty("Content-Type", "application/json; utf-8")
@@ -171,7 +171,7 @@ jobs:
                             put("temperature", temp)
                             put("top_k", topK)
                             put("n_predict", maxTokens)
-                            put("stop", listOf("Exit:", "Out:", "Err:")) // Previene allucinazioni del modello
+                            put("stop", listOf("Exit:", "Out:", "Err:"))
                         }.toString()
 
                         conn.outputStream.use { os ->
@@ -254,7 +254,6 @@ jobs:
         }
         EOF
         
-        # FILE 2: La UI (Aggiunto il pulsante Stop affiancato)
         cat << 'EOF' > app/src/main/java/com/agente/gemma/MainActivity.kt
         package com.agente.gemma
         
@@ -343,7 +342,6 @@ jobs:
                     setOnClickListener { startActivityForResult(Intent(Intent.ACTION_GET_CONTENT).apply { type = "text/plain" }, PICK_TXT_FILE) }
                 }
                 
-                // Layout orizzontale per i tasti Start/Stop
                 val buttonLayout = LinearLayout(this).apply {
                     orientation = LinearLayout.HORIZONTAL
                     weightSum = 2f
@@ -422,3 +420,4 @@ jobs:
       with:
         name: Agente-Bridge-Debug
         path: app/build/outputs/apk/debug/app-debug.apk
+        
