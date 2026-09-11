@@ -1,4 +1,4 @@
-name: Compila Agente Gemini Nano
+name: Compila Agente Gemini Nano Client
 
 on:
   workflow_dispatch: 
@@ -43,8 +43,8 @@ jobs:
                 applicationId = "com.agente.gemma"
                 minSdk = 31
                 targetSdk = 34
-                versionCode = 37
-                versionName = "15.2-Pro-Completa"
+                versionCode = 38
+                versionName = "16.0-Termux-Bridge"
             }
             compileOptions {
                 sourceCompatibility = JavaVersion.VERSION_17
@@ -55,12 +55,13 @@ jobs:
             }
         }
         dependencies { 
-            implementation("com.google.mediapipe:tasks-genai:0.10.14")
+            // Addio MediaPipe! Ora l'app è leggerissima.
             implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
             implementation("androidx.core:core-ktx:1.12.0")
         }
         EOF
         
+        # MANIFEST: Aggiunti permessi INTERNET e usesCleartextTraffic per parlare con localhost
         cat << 'EOF' > app/src/main/AndroidManifest.xml
         <?xml version="1.0" encoding="utf-8"?>
         <manifest xmlns:android="http://schemas.android.com/apk/res/android">
@@ -69,14 +70,12 @@ jobs:
             </queries>
             
             <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
+            <uses-permission android:name="android.permission.INTERNET" />
             
             <application 
-                android:label="Gemini Agent Pro" 
+                android:label="Gemini Agent Bridge" 
                 android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
-                android:largeHeap="true">
-                
-                <uses-native-library android:name="libOpenCL.so" android:required="false" />
-                <uses-native-library android:name="libOpenCL-pixel.so" android:required="false" />
+                android:usesCleartextTraffic="true">
                 
                 <activity android:name=".MainActivity" android:exported="true">
                     <intent-filter>
@@ -88,6 +87,7 @@ jobs:
         </manifest>
         EOF
         
+        # FILE 1: Il Cervello (Ora si connette al Server Llama.cpp)
         cat << 'EOF' > app/src/main/java/com/agente/gemma/GeminiAgentBrain.kt
         package com.agente.gemma
         
@@ -96,13 +96,14 @@ jobs:
         import android.content.Intent
         import android.os.Build
         import kotlinx.coroutines.*
-        import com.google.mediapipe.tasks.genai.llminference.LlmInference
+        import org.json.JSONObject
+        import java.net.HttpURLConnection
+        import java.net.URL
         
         class GeminiAgentBrain(private val context: Context, private val logger: (String) -> Unit, private val onFinish: () -> Unit) {
             private val scope = CoroutineScope(Dispatchers.IO + Job())
             private var conversationHistory = ""
             private var stepCount = 0
-            private var llmInference: LlmInference? = null
             
             private val systemPrompt = """
                 Sei un Ingegnere Software Autonomo.
@@ -116,37 +117,14 @@ jobs:
                 #FINE FINE#
             """.trimIndent() + "\n\n"
 
-               fun loadModel(modelPath: String, temp: Float, topK: Int, maxTokens: Int) {
-                logger("⏳ Avvio motore LiteRT...\n")
-                logger("⚙️ Parametri: Temp=$temp | TopK=$topK | Tokens=$maxTokens\n")
-                try {
-                    val options = LlmInference.LlmInferenceOptions.builder()
-                        .setModelPath(modelPath)
-                        .setTemperature(temp)
-                        .setTopK(topK)
-                        .setMaxTokens(maxTokens)
-                        // Rimossa la riga del delegate che causava l'errore di compilazione
-                        .build()
-                    
-                    llmInference?.close()
-                    llmInference = LlmInference.createFromOptions(context, options)
-                    logger("✅ Motore NPU inizializzato con successo!\n\n")
-                } catch (e: Exception) {
-                    logger("❌ Errore caricamento Kotlin: ${e.message}\n")
-                }
-            }
-
-
-
-            fun startTask(objective: String) {
-                if (llmInference == null) return
+            fun startTask(objective: String, temp: Float, topK: Int, maxTokens: Int) {
                 stepCount = 0
                 conversationHistory = systemPrompt + "Obiettivo: $objective\n"
-                logger("🎯 Avvio task autonomo...\n")
-                thinkAndAct()
+                logger("🎯 Avvio task (Connessione a Termux)...\n")
+                thinkAndAct(temp, topK, maxTokens)
             }
 
-            fun processTermuxResult(exitCode: Int, out: String, err: String) {
+            fun processTermuxResult(exitCode: Int, out: String, err: String, temp: Float, topK: Int, maxTokens: Int) {
                 stepCount++
                 if (stepCount >= 7) {
                     logger("🛑 Limite azioni raggiunto.\n\n")
@@ -163,39 +141,68 @@ jobs:
                 }
                 
                 conversationHistory += "Exit: $exitCode, Out: $safeOut, Err: $safeErr\nProssima mossa?\n"
-                thinkAndAct()
+                thinkAndAct(temp, topK, maxTokens)
             }
 
-            private fun thinkAndAct() {
+            private fun thinkAndAct(temp: Float, topK: Int, maxTokens: Int) {
                 scope.launch {
                     try {
-                        val aiRawText = llmInference?.generateResponse(conversationHistory)?.trim() ?: ""
-                        var cmdToRun = ""
-                        var finishMsg = ""
+                        val url = URL("http://127.0.0.1:8080/completion")
+                        val conn = url.openConnection() as HttpURLConnection
+                        conn.requestMethod = "POST"
+                        conn.setRequestProperty("Content-Type", "application/json; utf-8")
+                        conn.doOutput = true
                         
-                        if (aiRawText.contains("#INIZIO COMANDO#") && aiRawText.contains("#FINE COMANDO#")) {
-                            cmdToRun = aiRawText.substringAfter("#INIZIO COMANDO#").substringBefore("#FINE COMANDO#").trim()
-                        } else if (aiRawText.contains("#INIZIO FINE#") && aiRawText.contains("#FINE FINE#")) {
-                            finishMsg = aiRawText.substringAfter("#INIZIO FINE#").substringBefore("#FINE FINE#").trim()
+                        val jsonInput = JSONObject().apply {
+                            put("prompt", conversationHistory)
+                            put("temperature", temp)
+                            put("top_k", topK)
+                            put("n_predict", maxTokens)
+                        }.toString()
+
+                        conn.outputStream.use { os ->
+                            val input = jsonInput.toByteArray(Charsets.UTF_8)
+                            os.write(input, 0, input.size)
                         }
-                        
-                        withContext(Dispatchers.Main) {
-                            if (cmdToRun.isNotBlank()) {
-                                logger("🤖 Eseguo:\n$cmdToRun\n")
-                                conversationHistory += "Hai inviato un comando.\n"
-                                sendToTermux(cmdToRun)
-                            } else if (finishMsg.isNotBlank()) {
-                                logger("✅ Finito: $finishMsg\n\n")
+
+                        val responseCode = conn.responseCode
+                        if (responseCode == 200) {
+                            val responseBody = conn.inputStream.bufferedReader().use { it.readText() }
+                            val jsonResponse = JSONObject(responseBody)
+                            val aiRawText = jsonResponse.optString("content", "").trim()
+                            
+                            var cmdToRun = ""
+                            var finishMsg = ""
+                            
+                            if (aiRawText.contains("#INIZIO COMANDO#") && aiRawText.contains("#FINE COMANDO#")) {
+                                cmdToRun = aiRawText.substringAfter("#INIZIO COMANDO#").substringBefore("#FINE COMANDO#").trim()
+                            } else if (aiRawText.contains("#INIZIO FINE#") && aiRawText.contains("#FINE FINE#")) {
+                                finishMsg = aiRawText.substringAfter("#INIZIO FINE#").substringBefore("#FINE FINE#").trim()
+                            }
+                            
+                            withContext(Dispatchers.Main) {
+                                if (cmdToRun.isNotBlank()) {
+                                    logger("🤖 Eseguo:\n$cmdToRun\n")
+                                    conversationHistory += "Hai inviato un comando.\n"
+                                    sendToTermux(cmdToRun)
+                                } else if (finishMsg.isNotBlank()) {
+                                    logger("✅ Finito: $finishMsg\n\n")
+                                    onFinish()
+                                } else {
+                                    logger("⚠️ Errore sintassi IA...\n")
+                                    conversationHistory += "ERRORE: Usa i tag.\n"
+                                    thinkAndAct(temp, topK, maxTokens)
+                                }
+                            }
+                        } else {
+                            withContext(Dispatchers.Main) {
+                                logger("❌ Errore Server Termux: Codice $responseCode\nIl server è acceso?\n")
                                 onFinish()
-                            } else {
-                                logger("⚠️ Errore sintassi IA...\n")
-                                conversationHistory += "ERRORE: Usa i tag.\n"
-                                thinkAndAct()
                             }
                         }
                     } catch (e: Exception) {
                         withContext(Dispatchers.Main) {
-                            logger("❌ Errore TPU/NPU: ${e.message}\n")
+                            logger("❌ Errore Connessione: ${e.message}\nHai avviato il server su Termux?\n")
                             onFinish()
                         }
                     }
@@ -224,6 +231,7 @@ jobs:
         }
         EOF
         
+        # FILE 2: La UI (Pulita e ottimizzata)
         cat << 'EOF' > app/src/main/java/com/agente/gemma/MainActivity.kt
         package com.agente.gemma
         
@@ -241,26 +249,20 @@ jobs:
         import android.widget.ScrollView
         import android.widget.SeekBar
         import android.widget.TextView
-        import kotlinx.coroutines.*
-        import java.io.File
         
         class MainActivity : Activity() {
             private lateinit var logView: TextView
             private lateinit var submitButton: Button
-            private lateinit var initModelButton: Button
             private lateinit var agentBrain: GeminiAgentBrain
             
             private var fileContent: String = ""
-            private var isModelLoaded = false
             
-            // Valori di default
+            // Valori
             private var valTemp = 0.7f
             private var valTopK = 40
-            private var valTokens = 1024
+            private var valTokens = 2048
             
-            private val PICK_MODEL_FILE = 1000
             private val PICK_TXT_FILE = 1001
-            private val scope = CoroutineScope(Dispatchers.Main + Job())
             
             private val termuxReceiver = object : BroadcastReceiver() {
                 override fun onReceive(context: Context, intent: Intent) {
@@ -268,7 +270,7 @@ jobs:
                     val exitCode = bundle.getInt("com.termux.RUN_COMMAND_EXIT_CODE")
                     val out = bundle.getString("com.termux.RUN_COMMAND_STDOUT")?.trim() ?: ""
                     val err = bundle.getString("com.termux.RUN_COMMAND_STDERR")?.trim() ?: ""
-                    agentBrain.processTermuxResult(exitCode, out, err)
+                    agentBrain.processTermuxResult(exitCode, out, err, valTemp, valTopK, valTokens)
                 }
             }
         
@@ -297,88 +299,41 @@ jobs:
                     setPadding(30, 30, 30, 30)
                 }
                 
-                // SLIDER 1: TEMPERATURA
+                val lblTitle = TextView(this).apply { text = "Gemini Agent Bridge\n"; textSize = 18f; setTypeface(null, android.graphics.Typeface.BOLD) }
+                
+                // SLIDERS
                 val lblTemp = TextView(this).apply { text = "Temperatura: $valTemp" }
-                val sbTemp = SeekBar(this).apply {
-                    max = 100; progress = 70
-                    setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                        override fun onProgressChanged(s: SeekBar?, p: Int, f: Boolean) { valTemp = p/100f; lblTemp.text = "Temperatura: $valTemp" }
-                        override fun onStartTrackingTouch(s: SeekBar?) {} override fun onStopTrackingTouch(s: SeekBar?) {}
-                    })
-                }
+                val sbTemp = SeekBar(this).apply { max = 100; progress = 70; setOnSeekBarChangeListener(object: SeekBar.OnSeekBarChangeListener{ override fun onProgressChanged(s: SeekBar?, p: Int, f: Boolean) { valTemp = p/100f; lblTemp.text = "Temperatura: $valTemp" }; override fun onStartTrackingTouch(s: SeekBar?) {}; override fun onStopTrackingTouch(s: SeekBar?) {}}) }
                 
-                // SLIDER 2: TOP-K
                 val lblTopK = TextView(this).apply { text = "Top-K: $valTopK" }
-                val sbTopK = SeekBar(this).apply {
-                    max = 99; progress = 39
-                    setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                        override fun onProgressChanged(s: SeekBar?, p: Int, f: Boolean) { valTopK = p+1; lblTopK.text = "Top-K: $valTopK" }
-                        override fun onStartTrackingTouch(s: SeekBar?) {} override fun onStopTrackingTouch(s: SeekBar?) {}
-                    })
-                }
+                val sbTopK = SeekBar(this).apply { max = 99; progress = 39; setOnSeekBarChangeListener(object: SeekBar.OnSeekBarChangeListener{ override fun onProgressChanged(s: SeekBar?, p: Int, f: Boolean) { valTopK = p+1; lblTopK.text = "Top-K: $valTopK" }; override fun onStartTrackingTouch(s: SeekBar?) {}; override fun onStopTrackingTouch(s: SeekBar?) {}}) }
                 
-                // SLIDER 3: MAX TOKENS
                 val lblTokens = TextView(this).apply { text = "Max Tokens: $valTokens" }
-                val sbTokens = SeekBar(this).apply {
-                    max = 1920; progress = 1024 - 128
-                    setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                        override fun onProgressChanged(s: SeekBar?, p: Int, f: Boolean) { valTokens = p+128; lblTokens.text = "Max Tokens: $valTokens" }
-                        override fun onStartTrackingTouch(s: SeekBar?) {} override fun onStopTrackingTouch(s: SeekBar?) {}
-                    })
-                }
-                
-                val loadModelButton = Button(this).apply {
-                    text = "1. IMPORTA MODELLO (.litertlm)"
-                    setOnClickListener {
-                        startActivityForResult(Intent(Intent.ACTION_GET_CONTENT).apply { type = "*/*" }, PICK_MODEL_FILE)
-                    }
-                }
-                
-                initModelButton = Button(this).apply {
-                    text = "2. INIZIALIZZA NPU"
-                    isEnabled = File(filesDir, "custom_model.litertlm").exists()
-                    setOnClickListener {
-                        val modelFile = File(filesDir, "custom_model.litertlm")
-                        if (modelFile.exists()) {
-                            logView.append("Avvio con Tokens=$valTokens...\n")
-                            initModelButton.isEnabled = false
-                            scope.launch(Dispatchers.IO) {
-                                agentBrain.loadModel(modelFile.absolutePath, valTemp, valTopK, valTokens)
-                                isModelLoaded = true
-                                withContext(Dispatchers.Main) { 
-                                    initModelButton.isEnabled = true
-                                    submitButton.isEnabled = true 
-                                }
-                            }
-                        } else {
-                            logView.append("⚠️ Errore: File non trovato. Importalo.\n")
-                        }
-                    }
-                }
+                val sbTokens = SeekBar(this).apply { max = 3900; progress = 2048 - 128; setOnSeekBarChangeListener(object: SeekBar.OnSeekBarChangeListener{ override fun onProgressChanged(s: SeekBar?, p: Int, f: Boolean) { valTokens = p+128; lblTokens.text = "Max Tokens: $valTokens" }; override fun onStartTrackingTouch(s: SeekBar?) {}; override fun onStopTrackingTouch(s: SeekBar?) {}}) }
                 
                 val btnPrompt = Button(this).apply {
-                    text = "3. SELEZIONA PROMPT (.txt)"
+                    text = "1. SELEZIONA PROMPT (.txt)"
                     setOnClickListener { startActivityForResult(Intent(Intent.ACTION_GET_CONTENT).apply { type = "text/plain" }, PICK_TXT_FILE) }
                 }
                 
                 submitButton = Button(this).apply {
-                    text = "4. AVVIA AGENTE"
-                    isEnabled = false
+                    text = "2. AVVIA AGENTE"
                     setOnClickListener {
-                        if (!isModelLoaded || fileContent.isBlank()) return@setOnClickListener
+                        if (fileContent.isBlank()) {
+                            logView.append("⚠️ Carica un prompt prima!\n")
+                            return@setOnClickListener
+                        }
                         submitButton.isEnabled = false
-                        agentBrain.startTask(fileContent)
+                        agentBrain.startTask(fileContent, valTemp, valTopK, valTokens)
                     }
                 }
                 
-                logView = TextView(this).apply { text = "--- Pannello Parametri ---\n\n"; textSize = 14f }
+                logView = TextView(this).apply { text = "--- Console ---\nAssicurati che il server Termux sia acceso in background.\n\n"; textSize = 14f }
                 
+                layout.addView(lblTitle)
                 layout.addView(lblTemp); layout.addView(sbTemp)
                 layout.addView(lblTopK); layout.addView(sbTopK)
                 layout.addView(lblTokens); layout.addView(sbTokens)
-                
-                layout.addView(loadModelButton)
-                layout.addView(initModelButton)
                 layout.addView(btnPrompt)
                 layout.addView(submitButton)
                 layout.addView(logView)
@@ -388,36 +343,12 @@ jobs:
             
             override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
                 super.onActivityResult(requestCode, resultCode, data)
-                if (resultCode == RESULT_OK && data?.data != null) {
-                    val uri = data.data!!
-                    if (requestCode == PICK_MODEL_FILE) {
-                        logView.append("⏳ COPIA IN CORSO: Non chiudere l'app...\n")
-                        scope.launch(Dispatchers.IO) {
-                            try {
-                                val outFile = File(filesDir, "custom_model.litertlm")
-                                contentResolver.openInputStream(uri)?.use { input ->
-                                    outFile.outputStream().use { output ->
-                                        input.copyTo(output, 8192 * 4) 
-                                    }
-                                }
-                                withContext(Dispatchers.Main) {
-                                    val sizeMb = outFile.length() / (1024 * 1024)
-                                    logView.append("✅ Modello copiato ($sizeMb MB)!\n")
-                                    initModelButton.isEnabled = true
-                                }
-                            } catch (e: Exception) {
-                                withContext(Dispatchers.Main) {
-                                    logView.append("❌ Errore copia: ${e.message}\n")
-                                }
-                            }
-                        }
-                    } else if (requestCode == PICK_TXT_FILE) {
-                        try {
-                            fileContent = contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } ?: ""
-                            logView.append("✅ Prompt caricato!\n")
-                        } catch (e: Exception) {
-                            logView.append("❌ Errore lettura prompt\n")
-                        }
+                if (resultCode == RESULT_OK && data?.data != null && requestCode == PICK_TXT_FILE) {
+                    try {
+                        fileContent = contentResolver.openInputStream(data.data!!)?.bufferedReader()?.use { it.readText() } ?: ""
+                        logView.append("✅ Prompt caricato!\n")
+                    } catch (e: Exception) {
+                        logView.append("❌ Errore lettura prompt\n")
                     }
                 }
             }
@@ -425,7 +356,6 @@ jobs:
             override fun onDestroy() {
                 super.onDestroy()
                 unregisterReceiver(termuxReceiver)
-                scope.cancel()
             }
         }
         EOF
@@ -441,5 +371,6 @@ jobs:
     - name: Salva l'APK
       uses: actions/upload-artifact@v4
       with:
-        name: Agente-LiteRT-Termux
+        name: Agente-Bridge-Termux
         path: app/build/outputs/apk/debug/app-debug.apk
+        
