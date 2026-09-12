@@ -1,4 +1,4 @@
-name: Compila Agente Gemini Nano Client
+name: Compila App Upscale Settori
 
 on:
   workflow_dispatch: 
@@ -16,9 +16,10 @@ jobs:
         java-version: '17'
         distribution: 'temurin'
 
-    - name: Crea la struttura nativa dell'App
+    - name: Crea la struttura del progetto
       run: |
-        mkdir -p app/src/main/java/com/agente/gemma
+        mkdir -p app/src/main/java/com/app/upscale
+        mkdir -p app/src/main/assets
         
         cat << 'EOF' > gradle.properties
         android.useAndroidX=true
@@ -27,7 +28,7 @@ jobs:
         cat << 'EOF' > settings.gradle.kts
         pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
         dependencyResolutionManagement { repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS); repositories { google(); mavenCentral() } }
-        rootProject.name = "GeminiAgent"
+        rootProject.name = "SectorUpscale"
         include(":app")
         EOF
         
@@ -37,14 +38,14 @@ jobs:
             id("org.jetbrains.kotlin.android") version "2.1.0" 
         }
         android {
-            namespace = "com.agente.gemma"
+            namespace = "com.app.upscale"
             compileSdk = 34
             defaultConfig { 
-                applicationId = "com.agente.gemma"
-                minSdk = 31
+                applicationId = "com.app.upscale"
+                minSdk = 26
                 targetSdk = 34
-                versionCode = 40
-                versionName = "17.1-Termux-Bridge-Fix"
+                versionCode = 1
+                versionName = "1.0"
             }
             compileOptions {
                 sourceCompatibility = JavaVersion.VERSION_17
@@ -53,30 +54,30 @@ jobs:
             kotlinOptions {
                 jvmTarget = "17"
             }
+            aaptOptions {
+                noCompress("tflite")
+            }
         }
         dependencies { 
+            implementation("org.tensorflow:tensorflow-lite:2.14.0")
+            implementation("org.tensorflow:tensorflow-lite-support:0.4.4")
             implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
             implementation("androidx.core:core-ktx:1.12.0")
         }
         EOF
         
-        # MANIFEST: Blindato con namespace esplicito
         cat << 'EOF' > app/src/main/AndroidManifest.xml
         <?xml version="1.0" encoding="utf-8"?>
-        <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.agente.gemma">
-            <queries>
-                <package android:name="com.termux" />
-            </queries>
-            
-            <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
-            <uses-permission android:name="android.permission.INTERNET" />
+        <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+            <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+            <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
             
             <application 
-                android:label="Gemini Agent Bridge" 
+                android:label="Sector Upscale" 
                 android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
-                android:usesCleartextTraffic="true">
+                android:largeHeap="true">
                 
-                <activity android:name="com.agente.gemma.MainActivity" android:exported="true">
+                <activity android:name=".MainActivity" android:exported="true">
                     <intent-filter>
                         <action android:name="android.intent.action.MAIN" />
                         <category android:name="android.intent.category.LAUNCHER" />
@@ -86,327 +87,258 @@ jobs:
         </manifest>
         EOF
         
-        cat << 'EOF' > app/src/main/java/com/agente/gemma/GeminiAgentBrain.kt
-        package com.agente.gemma
-        
-        import android.app.PendingIntent
-        import android.content.Context
-        import android.content.Intent
-        import android.os.Build
-        import kotlinx.coroutines.*
-        import org.json.JSONObject
-        import java.net.HttpURLConnection
-        import java.net.URL
-        
-        class GeminiAgentBrain(private val context: Context, private val logger: (String) -> Unit, private val onFinish: () -> Unit) {
-            private val scope = CoroutineScope(Dispatchers.IO + Job())
-            private var conversationHistory = ""
-            private var stepCount = 0
-            
-            @Volatile
-            private var isRunning = false
-            
-            private val systemPrompt = """
-                Sei un Ingegnere Software Autonomo.
-                USA I DELIMITATORI. Non scrivere fuori dai tag e non aggiungere testo discorsivo.
-                #INIZIO COMANDO#
-                comando_qui
-                #FINE COMANDO#
-                
-                #INIZIO FINE#
-                completato
-                #FINE FINE#
-            """.trimIndent() + "\n\n"
-
-            fun startTask(objective: String, temp: Float, topK: Int, maxTokens: Int) {
-                isRunning = true
-                stepCount = 0
-                conversationHistory = systemPrompt + "Obiettivo: $objective\n"
-                logger("🎯 Avvio task (Connessione a Termux)...\n")
-                thinkAndAct(temp, topK, maxTokens)
-            }
-            
-            fun stopTask() {
-                isRunning = false
-                logger("🛑 TASK INTERROTTO DALL'UTENTE.\n\n")
-                onFinish()
-            }
-
-            fun processTermuxResult(exitCode: Int, out: String, err: String, temp: Float, topK: Int, maxTokens: Int) {
-                if (!isRunning) return
-                
-                stepCount++
-                if (stepCount >= 10) {
-                    logger("🛑 Limite azioni raggiunto. Mi fermo.\n\n")
-                    isRunning = false
-                    onFinish()
-                    return
-                }
-                
-                val safeOut = if (out.length > 150) out.take(150) + "..." else out
-                val safeErr = if (err.length > 150) err.take(150) + "..." else err
-                
-                val historyLines = conversationHistory.lines()
-                if (historyLines.size > 20) {
-                    conversationHistory = systemPrompt + historyLines.takeLast(8).joinToString("\n") + "\n"
-                }
-                
-                conversationHistory += "Exit: $exitCode, Out: $safeOut, Err: $safeErr\nProssima mossa?\n"
-                thinkAndAct(temp, topK, maxTokens)
-            }
-
-            private fun thinkAndAct(temp: Float, topK: Int, maxTokens: Int) {
-                if (!isRunning) return
-                
-                scope.launch {
-                    try {
-                        val url = URL("http://127.0.0.1:8080/completion")
-                        val conn = url.openConnection() as HttpURLConnection
-                        conn.requestMethod = "POST"
-                        conn.setRequestProperty("Content-Type", "application/json; utf-8")
-                        conn.doOutput = true
-                        
-                        val jsonInput = JSONObject().apply {
-                            put("prompt", conversationHistory)
-                            put("temperature", temp)
-                            put("top_k", topK)
-                            put("n_predict", maxTokens)
-                            put("stop", listOf("Exit:", "Out:", "Err:"))
-                        }.toString()
-
-                        conn.outputStream.use { os ->
-                            val input = jsonInput.toByteArray(Charsets.UTF_8)
-                            os.write(input, 0, input.size)
-                        }
-
-                        val responseCode = conn.responseCode
-                        if (responseCode == 200) {
-                            val responseBody = conn.inputStream.bufferedReader().use { it.readText() }
-                            val jsonResponse = JSONObject(responseBody)
-                            val aiRawText = jsonResponse.optString("content", "").trim()
-                            
-                            withContext(Dispatchers.Main) {
-                                logger("🧠 [OUTPUT GREZZO IA]:\n$aiRawText\n\n")
-                            }
-                            
-                            if (!isRunning) return@launch
-                            
-                            var cmdToRun = ""
-                            var finishMsg = ""
-                            
-                            if (aiRawText.contains("#INIZIO COMANDO#") && aiRawText.contains("#FINE COMANDO#")) {
-                                cmdToRun = aiRawText.substringAfter("#INIZIO COMANDO#").substringBefore("#FINE COMANDO#").trim()
-                            } else if (aiRawText.contains("#INIZIO FINE#") && aiRawText.contains("#FINE FINE#")) {
-                                finishMsg = aiRawText.substringAfter("#INIZIO FINE#").substringBefore("#FINE FINE#").trim()
-                            }
-                            
-                            withContext(Dispatchers.Main) {
-                                if (cmdToRun.isNotBlank()) {
-                                    logger("🤖 Eseguo Comando:\n$cmdToRun\n")
-                                    conversationHistory += "Hai inviato un comando.\n"
-                                    sendToTermux(cmdToRun)
-                                } else if (finishMsg.isNotBlank()) {
-                                    logger("✅ Finito: $finishMsg\n\n")
-                                    isRunning = false
-                                    onFinish()
-                                } else {
-                                    logger("⚠️ SINTASSI NON TROVATA. Riallineamento...\n")
-                                    conversationHistory += "ERRORE SINTASSI: Rispondi SOLO con i delimitatori richiesti.\n"
-                                    thinkAndAct(temp, topK, maxTokens)
-                                }
-                            }
-                        } else {
-                            withContext(Dispatchers.Main) {
-                                logger("❌ Errore Server Termux: $responseCode\n")
-                                isRunning = false
-                                onFinish()
-                            }
-                        }
-                    } catch (e: Exception) {
-                        withContext(Dispatchers.Main) {
-                            logger("❌ Errore Rete: ${e.message}\nIl server Termux è acceso?\n")
-                            isRunning = false
-                            onFinish()
-                        }
-                    }
-                }
-            }
-
-            private fun sendToTermux(cmd: String) {
-                val resultIntent = Intent("com.agente.gemma.RESULT")
-                resultIntent.setPackage(context.packageName)
-                val pendingIntent = PendingIntent.getBroadcast(context, 0, resultIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE)
-                
-                val intent = Intent("com.termux.RUN_COMMAND")
-                intent.setClassName("com.termux", "com.termux.app.RunCommandService")
-                intent.putExtra("com.termux.RUN_COMMAND_PATH", "/data/data/com.termux/files/usr/bin/sh")
-                intent.putExtra("com.termux.RUN_COMMAND_ARGUMENTS", arrayOf("-c", cmd))
-                intent.putExtra("com.termux.RUN_COMMAND_WORKDIR", "/data/data/com.termux/files/home")
-                intent.putExtra("com.termux.RUN_COMMAND_BACKGROUND", true)
-                intent.putExtra("com.termux.RUN_COMMAND_PENDING_INTENT", pendingIntent)
-                
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    context.startForegroundService(intent)
-                } else {
-                    context.startService(intent)
-                }
-            }
-        }
-        EOF
-        
-        cat << 'EOF' > app/src/main/java/com/agente/gemma/MainActivity.kt
-        package com.agente.gemma
+        cat << 'EOF' > app/src/main/java/com/app/upscale/MainActivity.kt
+        package com.app.upscale
         
         import android.app.Activity
-        import android.content.BroadcastReceiver
-        import android.content.Context
+        import android.content.ContentValues
         import android.content.Intent
-        import android.content.IntentFilter
-        import android.content.pm.PackageManager
-        import android.graphics.Color
+        import android.graphics.Bitmap
+        import android.graphics.BitmapFactory
+        import android.graphics.Canvas
+        import android.net.Uri
         import android.os.Build
         import android.os.Bundle
+        import android.os.Environment
+        import android.provider.MediaStore
         import android.view.WindowManager
-        import android.widget.Button
-        import android.widget.LinearLayout
-        import android.widget.ScrollView
-        import android.widget.SeekBar
-        import android.widget.TextView
+        import android.widget.*
+        import kotlinx.coroutines.*
+        import org.tensorflow.lite.Interpreter
+        import org.tensorflow.lite.nnapi.NnApiDelegate
+        import java.io.File
+        import java.nio.ByteBuffer
+        import java.nio.ByteOrder
         
         class MainActivity : Activity() {
-            private lateinit var logView: TextView
-            private lateinit var submitButton: Button
-            private lateinit var stopButton: Button
-            private lateinit var agentBrain: GeminiAgentBrain
+            private lateinit var statusText: TextView
+            private lateinit var startButton: Button
+            private lateinit var saveButton: Button
+            private lateinit var seekBar: SeekBar
+            private lateinit var sectorLabel: TextView
             
-            private var fileContent: String = ""
+            private var selectedImageUri: Uri? = null
+            private var processedBitmap: Bitmap? = null
+            private var gridSectors = 2
             
-            private var valTemp = 0.7f
-            private var valTopK = 40
-            private var valTokens = 2048
-            
-            private val PICK_TXT_FILE = 1001
-            
-            private val termuxReceiver = object : BroadcastReceiver() {
-                override fun onReceive(context: Context, intent: Intent) {
-                    val bundle = intent.extras ?: return
-                    val exitCode = bundle.getInt("com.termux.RUN_COMMAND_EXIT_CODE")
-                    val out = bundle.getString("com.termux.RUN_COMMAND_STDOUT")?.trim() ?: ""
-                    val err = bundle.getString("com.termux.RUN_COMMAND_STDERR")?.trim() ?: ""
-                    agentBrain.processTermuxResult(exitCode, out, err, valTemp, valTopK, valTokens)
-                }
-            }
+            private val PICK_IMAGE = 100
+            private val scope = CoroutineScope(Dispatchers.Main + Job())
         
             override fun onCreate(savedInstanceState: Bundle?) {
                 super.onCreate(savedInstanceState)
                 window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
                 
-                agentBrain = GeminiAgentBrain(
-                    context = this,
-                    logger = { msg -> logView.append(msg) },
-                    onFinish = { 
-                        submitButton.isEnabled = true
-                        stopButton.isEnabled = false
-                        stopButton.setTextColor(Color.GRAY)
-                    }
-                )
-                
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    registerReceiver(termuxReceiver, IntentFilter("com.agente.gemma.RESULT"), Context.RECEIVER_EXPORTED)
-                } else {
-                    registerReceiver(termuxReceiver, IntentFilter("com.agente.gemma.RESULT"))
-                }
-                
-                if (checkSelfPermission("com.termux.permission.RUN_COMMAND") != PackageManager.PERMISSION_GRANTED) {
-                    requestPermissions(arrayOf("com.termux.permission.RUN_COMMAND"), 1)
-                }
-                
                 val layout = LinearLayout(this).apply {
                     orientation = LinearLayout.VERTICAL
-                    setPadding(30, 30, 30, 30)
+                    setPadding(40, 40, 40, 40)
                 }
                 
-                val lblTitle = TextView(this).apply { text = "Gemini Agent Bridge\n"; textSize = 18f; setTypeface(null, android.graphics.Typeface.BOLD) }
+                val title = TextView(this).apply { text = "Upscaler a Settori (NPU)\n"; textSize = 20f }
                 
-                val lblTemp = TextView(this).apply { text = "Temperatura: $valTemp" }
-                val sbTemp = SeekBar(this).apply { max = 100; progress = 70; setOnSeekBarChangeListener(object: SeekBar.OnSeekBarChangeListener{ override fun onProgressChanged(s: SeekBar?, p: Int, f: Boolean) { valTemp = p/100f; lblTemp.text = "Temperatura: $valTemp" }; override fun onStartTrackingTouch(s: SeekBar?) {}; override fun onStopTrackingTouch(s: SeekBar?) {}}) }
-                
-                val lblTopK = TextView(this).apply { text = "Top-K: $valTopK" }
-                val sbTopK = SeekBar(this).apply { max = 99; progress = 39; setOnSeekBarChangeListener(object: SeekBar.OnSeekBarChangeListener{ override fun onProgressChanged(s: SeekBar?, p: Int, f: Boolean) { valTopK = p+1; lblTopK.text = "Top-K: $valTopK" }; override fun onStartTrackingTouch(s: SeekBar?) {}; override fun onStopTrackingTouch(s: SeekBar?) {}}) }
-                
-                val lblTokens = TextView(this).apply { text = "Max Tokens: $valTokens" }
-                val sbTokens = SeekBar(this).apply { max = 3900; progress = 2048 - 128; setOnSeekBarChangeListener(object: SeekBar.OnSeekBarChangeListener{ override fun onProgressChanged(s: SeekBar?, p: Int, f: Boolean) { valTokens = p+128; lblTokens.text = "Max Tokens: $valTokens" }; override fun onStartTrackingTouch(s: SeekBar?) {}; override fun onStopTrackingTouch(s: SeekBar?) {}}) }
-                
-                val btnPrompt = Button(this).apply {
-                    text = "1. SELEZIONA PROMPT (.txt)"
-                    setOnClickListener { startActivityForResult(Intent(Intent.ACTION_GET_CONTENT).apply { type = "text/plain" }, PICK_TXT_FILE) }
-                }
-                
-                val buttonLayout = LinearLayout(this).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    weightSum = 2f
-                }
-                
-                submitButton = Button(this).apply {
-                    text = "2. AVVIA AGENTE"
-                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-                    setOnClickListener {
-                        if (fileContent.isBlank()) {
-                            logView.append("⚠️ Carica un prompt prima!\n")
-                            return@setOnClickListener
+                sectorLabel = TextView(this).apply { text = "Divisione griglia: ${gridSectors}x${gridSectors} settori" }
+                seekBar = SeekBar(this).apply {
+                    max = 6; progress = 1
+                    setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                        override fun onProgressChanged(s: SeekBar?, p: Int, f: Boolean) {
+                            gridSectors = p + 1
+                            sectorLabel.text = "Divisione griglia: ${gridSectors}x${gridSectors} settori"
                         }
-                        submitButton.isEnabled = false
-                        stopButton.isEnabled = true
-                        stopButton.setTextColor(Color.RED)
-                        agentBrain.startTask(fileContent, valTemp, valTopK, valTokens)
-                    }
+                        override fun onStartTrackingTouch(s: SeekBar?) {}
+                        override fun onStopTrackingTouch(s: SeekBar?) {}
+                    })
                 }
                 
-                stopButton = Button(this).apply {
-                    text = "STOP"
-                    isEnabled = false
-                    setTextColor(Color.GRAY)
-                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                val selectButton = Button(this).apply {
+                    text = "1. Seleziona Immagine"
                     setOnClickListener {
-                        agentBrain.stopTask()
+                        val intent = Intent(Intent.ACTION_GET_CONTENT).apply { type = "image/*" }
+                        startActivityForResult(intent, PICK_IMAGE)
                     }
                 }
                 
-                buttonLayout.addView(submitButton)
-                buttonLayout.addView(stopButton)
+                startButton = Button(this).apply {
+                    text = "2. Avvia Upscaling a Settori"
+                    isEnabled = false
+                    setOnClickListener {
+                        selectedImageUri?.let { uri -> startUpscaling(uri) }
+                    }
+                }
                 
-                logView = TextView(this).apply { text = "--- Console di Debug ---\nGuarda cosa genera l'IA per capire dove sbaglia la sintassi!\n\n"; textSize = 14f }
+                saveButton = Button(this).apply {
+                    text = "3. Salva Risultato"
+                    isEnabled = false
+                    setOnClickListener {
+                        processedBitmap?.let { bmp -> saveImageToGallery(bmp) }
+                    }
+                }
                 
-                layout.addView(lblTitle)
-                layout.addView(lblTemp); layout.addView(sbTemp)
-                layout.addView(lblTopK); layout.addView(sbTopK)
-                layout.addView(lblTokens); layout.addView(sbTokens)
-                layout.addView(btnPrompt)
-                layout.addView(buttonLayout)
-                layout.addView(logView)
+                statusText = TextView(this).apply { text = "\nPronto.\n"; textSize = 14f }
+                
+                layout.addView(title)
+                layout.addView(sectorLabel)
+                layout.addView(seekBar)
+                layout.addView(selectButton)
+                layout.addView(startButton)
+                layout.addView(saveButton)
+                layout.addView(statusText)
                 
                 setContentView(ScrollView(this).apply { addView(layout) })
             }
             
             override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
                 super.onActivityResult(requestCode, resultCode, data)
-                if (resultCode == RESULT_OK && data?.data != null && requestCode == PICK_TXT_FILE) {
+                if (resultCode == RESULT_OK && requestCode == PICK_IMAGE && data?.data != null) {
+                    selectedImageUri = data.data
+                    statusText.append("✅ Immagine selezionata.\n")
+                    startButton.isEnabled = true
+                }
+            }
+            
+            private fun startUpscaling(uri: Uri) {
+                startButton.isEnabled = false
+                saveButton.isEnabled = false
+                
+                scope.launch(Dispatchers.IO) {
                     try {
-                        fileContent = contentResolver.openInputStream(data.data!!)?.bufferedReader()?.use { it.readText() } ?: ""
-                        logView.append("✅ Prompt caricato!\n")
+                        statusText.append("⏳ Caricamento immagine...\n")
+                        val inputStream = contentResolver.openInputStream(uri)
+                        val originalBitmap = BitmapFactory.decodeStream(inputStream)
+                        inputStream?.close()
+                        
+                        val origW = originalBitmap.width
+                        val origH = originalBitmap.height
+                        
+                        // Inizializza l'interprete TFLite con NNAPI Delegate forzato sulla NPU
+                        val modelFile = loadModelFileFromAssets("model_sr.tflite")
+                        val options = Interpreter.Options().apply {
+                            val nnApiDelegate = NnApiDelegate()
+                            addDelegate(nnApiDelegate)
+                            setUseNnapiCpu(false)
+                        }
+                        
+                        val interpreter = Interpreter(modelFile, options)
+                        statusText.append("🚀 NPU (NNAPI) inizializzata con successo!\n")
+                        
+                        // Esempio fattore di scala 2x
+                        val scaleFactor = 2
+                        val finalW = origW * scaleFactor
+                        val finalH = origH * scaleFactor
+                        val resultBitmap = Bitmap.createBitmap(finalW, finalH, Bitmap.Config.ARGB_8888)
+                        val canvas = Canvas(resultBitmap)
+                        
+                        val sectorW = origW / gridSectors
+                        val sectorH = origH / gridSectors
+                        
+                        var currentSector = 1
+                        val totalSectors = gridSectors * gridSectors
+                        
+                        for (y in 0 until gridSectors) {
+                            for (x in 0 until gridSectors) {
+                                statusText.append("⚙️ Elaborazione settore $currentSector / $totalSectors...\n")
+                                
+                                val startX = x * sectorW
+                                val startY = y * sectorH
+                                val w = if (x == gridSectors - 1) origW - startX else sectorW
+                                val h = if (y == gridSectors - 1) origH - startY else sectorH
+                                
+                                // Taglio del settore dalla bitmap originale
+                                val sectorBitmap = Bitmap.createBitmap(originalBitmap, startX, startY, w, h)
+                                
+                                // Esegue l'upscale del singolo settore tramite il modello TFLite
+                                val upscaledSector = upscaleSectorWithTflite(interpreter, sectorBitmap, scaleFactor)
+                                
+                                // Ricostruzione geometrica sul canvas finale
+                                canvas.drawBitmap(upscaledSector, (startX * scaleFactor).toFloat(), (startY * scaleFactor).toFloat(), null)
+                                currentSector++
+                            }
+                        }
+                        
+                        interpreter.close()
+                        processedBitmap = resultBitmap
+                        
+                        withContext(Dispatchers.Main) {
+                            statusText.append("✨ Upscaling completato con successo!\n")
+                            saveButton.isEnabled = true
+                            startButton.isEnabled = true
+                        }
+                        
                     } catch (e: Exception) {
-                        logView.append("❌ Errore lettura prompt\n")
+                        withContext(Dispatchers.Main) {
+                            statusText.append("❌ Errore: ${e.message}\n")
+                            startButton.isEnabled = true
+                        }
                     }
                 }
             }
             
-            override fun onDestroy() {
-                super.onDestroy()
-                unregisterReceiver(termuxReceiver)
+            private fun loadModelFileFromAssets(fileName: String): ByteBuffer {
+                val assetManager = assets
+                val descriptor = assetManager.openFd(fileName)
+                val inputStream = descriptor.createInputStream()
+                val buffer = ByteBuffer.allocateDirect(descriptor.declaredLength.toInt())
+                buffer.order(ByteOrder.nativeOrder())
+                inputStream.channel.read(buffer)
+                inputStream.close()
+                return buffer
+            }
+            
+            private fun upscaleSectorWithTflite(interpreter: Interpreter, inputBmp: Bitmap, scale: Int): Bitmap {
+                val w = inputBmp.width
+                val h = inputBmp.height
+                val outW = w * scale
+                val outH = h * scale
+                
+                val inputBuffer = ByteBuffer.allocateDirect(4 * w * h * 3).order(ByteOrder.nativeOrder())
+                for (y in 0 until h) {
+                    for (x in 0 until w) {
+                        val pixel = inputBmp.getPixel(x, y)
+                        inputBuffer.putFloat(((pixel shr 16) and 0xFF) / 255.0f)
+                        inputBuffer.putFloat(((pixel shr 8) and 0xFF) / 255.0f)
+                        inputBuffer.putFloat((pixel and 0xFF) / 255.0f)
+                    }
+                }
+                
+                val outputBuffer = ByteBuffer.allocateDirect(4 * outW * outH * 3).order(ByteOrder.nativeOrder())
+                interpreter.run(inputBuffer, outputBuffer)
+                outputBuffer.rewind()
+                
+                val outputBmp = Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888)
+                for (y in 0 until outH) {
+                    for (x in 0 until outW) {
+                        val r = (outputBuffer.float * 255.0f).coerceIn(0f, 255f).toInt()
+                        val g = (outputBuffer.float * 255.0f).coerceIn(0f, 255f).toInt()
+                        val b = (outputBuffer.float * 255.0f).coerceIn(0f, 255f).toInt()
+                        outputBmp.setPixel(x, y, android.graphics.Color.rgb(r, g, b))
+                    }
+                }
+                return outputBmp
+            }
+            
+            private fun saveImageToGallery(bitmap: Bitmap) {
+                val filename = "Upscaled_${System.currentTimeMillis()}.png"
+                val fos = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    val resolver = contentResolver
+                    val contentValues = ContentValues().apply {
+                        put(MediaStore.MediaColumns.DISPLAY_NAME, filename)
+                        put(MediaStore.MediaColumns.MIME_TYPE, "image/png")
+                        put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES)
+                    }
+                    val imageUri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
+                    imageUri?.let { resolver.openOutputStream(it) }
+                } else {
+                    val imagesDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
+                    val image = File(imagesDir, filename)
+                    image.outputStream()
+                }
+                
+                fos?.use {
+                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)
+                    statusText.append("💾 Immagine salvata in Galleria!\n")
+                }
             }
         }
         EOF
-
+    
     - name: Configura ambiente Gradle
       uses: gradle/actions/setup-gradle@v3
       with:
@@ -418,6 +350,6 @@ jobs:
     - name: Salva l'APK
       uses: actions/upload-artifact@v4
       with:
-        name: Agente-Bridge-Debug
+        name: Sector-Upscale-APK
         path: app/build/outputs/apk/debug/app-debug.apk
         
